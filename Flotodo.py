@@ -8,8 +8,6 @@ import traceback
 import time 
 from collections import defaultdict, Counter
 import unicodedata
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 # --- CONFIGURACIÓN DE LA RUTA_RELATIVA ---
 RUTA_CSV = 'Flotodo.csv' 
@@ -42,7 +40,7 @@ def cargar_datos_flotodo(_ruta_csv, debug_mode=False):
         if not os.path.exists(ruta_csv_absoluta):
             st.error(f"❌ Error: No se encontró el archivo de datos de Florida.")
             st.error(f"La aplicación buscó el archivo en la ruta: {ruta_csv_absoluta}")
-            st.warning("💡 **Solución:** Asegúrate de que el archivo 'Flotodo.csv' exista en la carpeta 'Flotodo'.")
+            st.warning("💡 **Solución:** Asegúrate de que el archivo 'Flotodo.csv' exista en la carpeta correcta.")
             st.stop()
         
         with open(ruta_csv_absoluta, 'r', encoding='latin-1') as f:
@@ -180,13 +178,14 @@ def crear_mapa_de_calor_numeros(df_frecuencia, top_n=30, medio_n=30):
     df_ordenado.loc[0 : top_n - 1, 'Temperatura'] = '🔥 Caliente'
     return df_ordenado
 
-# --- FUNCIÓN PARA ANÁLISIS DE OPORTUNIDAD POR DÍGITO ---
-def analizar_oportunidad_por_digito(df_historial, df_estados_completos, historicos_numero, modo_temperatura, fecha_inicio_rango, fecha_fin_rango, top_n_candidatos=5):
+# --- FUNCIÓN PARA ANÁLISIS DE OPORTUNIDAD POR DÍGITO (CORREGIDA PARA CONSISTENCIA) ---
+def analizar_oportunidad_por_digito(df_historial, df_estados_completos, historicos_numero, modo_temperatura, fecha_inicio_rango, fecha_fin_rango, top_n_candidatos=5, fecha_referencia=None):
     st.info(f"🎯 **Análisis de Oportunidad por Dígito:** Iniciando análisis en modo: **{modo_temperatura}**.")
     
+    # 1. Cálculo de TEMPERATURA (Basado en frecuencia de rango)
     if modo_temperatura == "Histórico Completo":
         df_temperatura = df_historial.copy()
-        st.info(f"🌡️ **Análisis de Temperatura:** Se usará el **historial completo** de la sesión seleccionada.")
+        st.info(f"🌡️ **Análisis de Temperatura:** Se usará el **historial completo**.")
     else:
         end_of_day = fecha_fin_rango + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
         df_temperatura = df_historial[(df_historial['Fecha'] >= fecha_inicio_rango) & (df_historial['Fecha'] <= end_of_day)].copy()
@@ -222,38 +221,52 @@ def analizar_oportunidad_por_digito(df_historial, df_estados_completos, historic
     mapa_temp_decenas = pd.Series(df_frecuencia_decenas.Temperatura.values, index=df_frecuencia_decenas.Dígito).to_dict()
     mapa_temp_unidades = pd.Series(df_frecuencia_unidades.Temperatura.values, index=df_frecuencia_unidades.Dígito).to_dict()
     
-    puntuacion_temperatura_map = {'🔥 Caliente': 30, '🟡 Tibio': 20, '🧊 Frío': 10}
+    # 2. Cálculo de ESTADO (Normal/Vencido) - Lógica unificada con Estrategia Tendencia
+    # Se calcula basándose en la ausencia REAL del dígito en su posición específica
+    df_hist_estado = df_historial[df_historial['Fecha'] < fecha_referencia].copy()
+    
+    def calcular_estado_digito_posicion(df, digito, tipo):
+        if tipo == 'decena':
+            fechas = df[df['Numero'] // 10 == digito]['Fecha'].sort_values()
+        else: # unidad
+            fechas = df[df['Numero'] % 10 == digito]['Fecha'].sort_values()
+        
+        if fechas.empty: return 'Normal', 0, 0
+        
+        gaps = fechas.diff().dt.days.dropna()
+        promedio = gaps.median() if len(gaps) > 0 else 0
+        ultima_fecha = fechas.max()
+        gap_actual = (fecha_referencia - ultima_fecha).days
+        estado = calcular_estado_actual(gap_actual, promedio)
+        return estado, gap_actual, promedio
+
     resultados_decenas = []
     resultados_unidades = []
     
     for i in range(10):
-        numeros_con_decena = df_estados_completos[df_estados_completos['Decena'] == i]
-        numeros_con_unidad = df_estados_completos[df_estados_completos['Unidad'] == i]
+        # Decenas
+        estado_dec, gap_dec, prom_dec = calcular_estado_digito_posicion(df_hist_estado, i, 'decena')
         
-        estado_decena = numeros_con_decena['Estado_Numero'].iloc[0] if not numeros_con_decena.empty else 'Normal'
-        estado_unidad = numeros_con_unidad['Estado_Numero'].iloc[0] if not numeros_con_unidad.empty else 'Normal'
+        # Unidades
+        estado_uni, gap_uni, prom_uni = calcular_estado_digito_posicion(df_hist_estado, i, 'unidad')
 
-        puntuacion_base_decena = {'Muy Vencido': 100, 'Vencido': 50, 'Normal': 0}[estado_decena]
-        puntuacion_base_unidad = {'Muy Vencido': 100, 'Vencido': 50, 'Normal': 0}[estado_unidad]
+        # Puntuación
+        puntuacion_base_decena = {'Muy Vencido': 100, 'Vencido': 50, 'Normal': 0}[estado_dec]
+        puntuacion_base_unidad = {'Muy Vencido': 100, 'Vencido': 50, 'Normal': 0}[estado_uni]
 
-        if estado_decena == 'Normal':
-            gaps_decena = [historicos_numero.get(num, 0) for num in range(100) if num // 10 == i]
-            promedio = np.mean(gaps_decena) if gaps_decena else 1
-            gaps_actuales = numeros_con_decena['Salto_Numero'].tolist()
-            gap_actual = np.mean(gaps_actuales) if gaps_actuales else 0
-            puntuacion_proactiva_decena = min(49, (gap_actual / promedio * 50) if promedio > 0 else 0)
+        # Proactiva (solo si es normal)
+        if estado_dec == 'Normal':
+            puntuacion_proactiva_decena = min(49, (gap_dec / prom_dec * 50) if prom_dec > 0 else 0)
         else:
             puntuacion_proactiva_decena = 0
-
-        if estado_unidad == 'Normal':
-            gaps_unidad = [historicos_numero.get(num, 0) for num in range(100) if num % 10 == i]
-            promedio = np.mean(gaps_unidad) if gaps_unidad else 1
-            gaps_actuales = numeros_con_unidad['Salto_Numero'].tolist()
-            gap_actual = np.mean(gaps_actuales) if gaps_actuales else 0
-            puntuacion_proactiva_unidad = min(49, (gap_actual / promedio * 50) if promedio > 0 else 0)
+            
+        if estado_uni == 'Normal':
+            puntuacion_proactiva_unidad = min(49, (gap_uni / prom_uni * 50) if prom_uni > 0 else 0)
         else:
             puntuacion_proactiva_unidad = 0
 
+        # Temperatura
+        puntuacion_temperatura_map = {'🔥 Caliente': 30, '🟡 Tibio': 20, '🧊 Frío': 10}
         temperatura_decena = mapa_temp_decenas.get(i, '🟡 Tibio')
         temperatura_unidad = mapa_temp_unidades.get(i, '🟡 Tibio')
         puntuacion_temp_decena = puntuacion_temperatura_map.get(temperatura_decena, 20)
@@ -262,12 +275,13 @@ def analizar_oportunidad_por_digito(df_historial, df_estados_completos, historic
         puntuacion_total_decena = puntuacion_base_decena + puntuacion_proactiva_decena + puntuacion_temp_decena
         puntuacion_total_unidad = puntuacion_base_unidad + puntuacion_proactiva_unidad + puntuacion_temp_unidad
 
-        resultados_decenas.append({'Dígito': i, 'Rol': 'Decena', 'Temperatura': temperatura_decena, 'Estado': estado_decena, 'Puntuación Base': puntuacion_base_decena, 'Puntuación Proactiva': round(puntuacion_proactiva_decena, 1), 'Puntuación Temperatura': puntuacion_temp_decena, 'Puntuación Total': round(puntuacion_total_decena, 1)})
-        resultados_unidades.append({'Dígito': i, 'Rol': 'Unidad', 'Temperatura': temperatura_unidad, 'Estado': estado_unidad, 'Puntuación Base': puntuacion_base_unidad, 'Puntuación Proactiva': round(puntuacion_proactiva_unidad, 1), 'Puntuación Temperatura': puntuacion_temp_unidad, 'Puntuación Total': round(puntuacion_total_unidad, 1)})
+        resultados_decenas.append({'Dígito': i, 'Rol': 'Decena', 'Temperatura': temperatura_decena, 'Estado': estado_dec, 'Puntuación Base': puntuacion_base_decena, 'Puntuación Proactiva': round(puntuacion_proactiva_decena, 1), 'Puntuación Temperatura': puntuacion_temp_decena, 'Puntuación Total': round(puntuacion_total_decena, 1)})
+        resultados_unidades.append({'Dígito': i, 'Rol': 'Unidad', 'Temperatura': temperatura_unidad, 'Estado': estado_uni, 'Puntuación Base': puntuacion_base_unidad, 'Puntuación Proactiva': round(puntuacion_proactiva_unidad, 1), 'Puntuación Temperatura': puntuacion_temp_unidad, 'Puntuación Total': round(puntuacion_total_unidad, 1)})
 
     df_oportunidad_decenas = pd.DataFrame(resultados_decenas)
     df_oportunidad_unidades = pd.DataFrame(resultados_unidades)
 
+    # Candidatos combinados
     puntuacion_decena_map = df_oportunidad_decenas.set_index('Dígito')['Puntuación Total'].to_dict()
     puntuacion_unidad_map = df_oportunidad_unidades.set_index('Dígito')['Puntuación Total'].to_dict()
 
@@ -282,73 +296,6 @@ def analizar_oportunidad_por_digito(df_historial, df_estados_completos, historic
     df_candidatos['Numero'] = df_candidatos['Numero'].apply(lambda x: f"{x:02d}")
 
     return df_oportunidad_decenas, df_oportunidad_unidades, df_candidatos, mapa_temp_decenas, mapa_temp_unidades
-
-# --- FUNCIÓN PARA MAPA DE CALOR POSICIONAL ---
-def crear_mapa_calor_posicional(mapa_temp_decenas, mapa_temp_unidades):
-    temp_valores = {'🔥 Caliente': 3, '🟡 Tibio': 2, '🧊 Frío': 1}
-    matriz_calor = np.zeros((10, 10))
-    for unidad in range(10):
-        for decena in range(10):
-            temp_dec = mapa_temp_decenas.get(decena, '🟡 Tibio')
-            temp_uni = mapa_temp_unidades.get(unidad, '🟡 Tibio')
-            puntuacion = temp_valores[temp_dec] * 10 + temp_valores[temp_uni]
-            matriz_calor[unidad, decena] = puntuacion
-    return pd.DataFrame(matriz_calor, index=range(10), columns=range(10))
-
-def analizar_combinaciones_extremas(mapa_temp_decenas, mapa_temp_unidades, df_estados_completos):
-    hot_cold, cold_hot, hot_hot, cold_cold = [], [], [], []
-    puntuaciones_desequilibrio = {}
-    columnas_requeridas = ['Decena', 'Unidad', 'Numero']
-    for col in columnas_requeridas:
-        if col not in df_estados_completos.columns:
-            st.error(f"Falta la columna '{col}' en el DataFrame.")
-            st.stop()
-    
-    for num in range(100):
-        decena = num // 10
-        unidad = num % 10
-        temp_dec = mapa_temp_decenas.get(decena, '🟡 Tibio')
-        temp_uni = mapa_temp_unidades.get(unidad, '🟡 Tibio')
-        
-        temp_valores = {'🔥 Caliente': 3, '🟡 Tibio': 2, '🧊 Frío': 1}
-        score_dec = temp_valores[temp_dec]
-        score_uni = temp_valores[temp_uni]
-        puntuacion_desequilibrio = abs(score_dec - score_uni)
-        puntuaciones_desequilibrio[num] = puntuacion_desequilibrio
-        
-        num_str = f"{num:02d}"
-        if temp_dec == '🔥 Caliente' and temp_uni == '🧊 Frío': hot_cold.append(num_str)
-        elif temp_dec == '🧊 Frío' and temp_uni == '🔥 Caliente': cold_hot.append(num_str)
-        elif temp_dec == '🔥 Caliente' and temp_uni == '🔥 Caliente': hot_hot.append(num_str)
-        elif temp_dec == '🧊 Frío' and temp_uni == '🧊 Frío': cold_cold.append(num_str)
-
-    hot_cold.sort(key=lambda x: puntuaciones_desequilibrio[int(x)], reverse=True)
-    cold_hot.sort(key=lambda x: puntuaciones_desequilibrio[int(x)], reverse=True)
-    hot_hot.sort(key=lambda x: puntuaciones_desequilibrio[int(x)], reverse=True)
-    cold_cold.sort(key=lambda x: puntuaciones_desequilibrio[int(x)], reverse=True)
-    
-    # Corrección de sintaxis asegurada: separación de líneas y estructura clara
-    df_hot_cold = pd.DataFrame({
-        'Número': hot_cold, 
-        'Puntuación Desequilibrio': [puntuaciones_desequilibrio[int(x)] for x in hot_cold]
-    })
-    
-    df_cold_hot = pd.DataFrame({
-        'Número': cold_hot, 
-        'Puntuación Desequilibrio': [puntuaciones_desequilibrio[int(x)] for x in cold_hot]
-    })
-    
-    df_hot_hot = pd.DataFrame({
-        'Número': hot_hot, 
-        'Puntuación Desequilibrio': [puntuaciones_desequilibrio[int(x)] for x in hot_hot]
-    })
-    
-    df_cold_cold = pd.DataFrame({
-        'Número': cold_cold, 
-        'Puntuación Desequilibrio': [puntuaciones_desequilibrio[int(x)] for x in cold_cold]
-    })
-    
-    return df_hot_cold, df_cold_hot, df_hot_hot, df_cold_cold
 
 # --- FUNCIÓN PARA AUDITORÍA HISTÓRICA (OPTIMIZADA) ---
 def generar_auditoria_doble_normal(df_historial):
@@ -377,20 +324,19 @@ def generar_auditoria_doble_normal(df_historial):
             decena = numero // 10
             unidad = numero % 10
             
-            estado_dec = 'Normal'
-            estado_uni = 'Normal'
+            # Calculamos estado de la decena en ese momento
+            fechas_dec = df_hasta_ahora[df_hasta_ahora['Numero'] // 10 == decena]['Fecha'].sort_values()
+            gaps_dec = fechas_dec.diff().dt.days.dropna()
+            prom_dec = gaps_dec.median() if len(gaps_dec) > 0 else 0
+            gap_dec_actual = (fecha - fechas_dec.max()).days if not fechas_dec.empty else 0
+            estado_dec = calcular_estado_actual(gap_dec_actual, prom_dec)
             
-            def calc_estado(num, df_hist):
-                fechas = df_hist[df_hist['Numero'] == num]['Fecha'].sort_values()
-                if len(fechas) == 0: return 'Normal', 0, 0
-                gaps = fechas.diff().dt.days.dropna()
-                if len(gaps) == 0: return 'Normal', 0, 0
-                promedio = gaps.median()
-                gap = (fecha - fechas.max()).days
-                return calcular_estado_actual(gap, promedio), gap, promedio
-
-            estado_dec, _, _ = calc_estado(decena, df_hasta_ahora)
-            estado_uni, _, _ = calc_estado(unidad, df_hasta_ahora)
+            # Calculamos estado de la unidad en ese momento
+            fechas_uni = df_hasta_ahora[df_hasta_ahora['Numero'] % 10 == unidad]['Fecha'].sort_values()
+            gaps_uni = fechas_uni.diff().dt.days.dropna()
+            prom_uni = gaps_uni.median() if len(gaps_uni) > 0 else 0
+            gap_uni_actual = (fecha - fechas_uni.max()).days if not fechas_uni.empty else 0
+            estado_uni = calcular_estado_actual(gap_uni_actual, prom_uni)
             
             if estado_dec == 'Normal' and estado_uni == 'Normal':
                 df_auditoria_previa = pd.DataFrame(auditoria)
@@ -447,56 +393,7 @@ def buscar_patrones_secuenciales(df_historial, max_longitud=3, nombre_sesion="Ge
         patrones_ordenados[patron] = siguientes_ordenados
     return patrones_ordenados
 
-# --- FUNCIÓN PARA COMPORTAMIENTO DOBLE NORMAL (OPTIMIZADA) ---
-def analizar_comportamiento_doble_normal(df_historial):
-    st.info("📊 **Análisis de Comportamiento del 'Doble Normal'**: Evaluando el comportamiento en los últimos 200 sorteos.")
-    df_fijo = df_historial[df_historial['Posicion'] == 'Fijo'].copy() 
-    if df_fijo.empty: return pd.DataFrame()
-
-    df_fijo = df_fijo.tail(200)
-
-    comportamiento = {'Normal': 0, 'Vencido': 0, 'Muy Vencido': 0}
-    total_doble_normal = 0
-    
-    fechas_min = df_fijo['Fecha'].min()
-    df_historial_contexto = df_historial[df_historial['Fecha'] >= fechas_min].copy()
-    historial_fechas = {num: df_historial_contexto[df_historial_contexto['Numero'] == num]['Fecha'].sort_values() for num in range(100)}
-    
-    for i, row in df_fijo.iterrows():
-        fecha_actual, numero_actual = row['Fecha'], row['Numero']
-        decena, unidad = numero_actual // 10, numero_actual % 10
-        es_doble_normal = True
-        
-        for digito in [decena, unidad]:
-            fechas_digito = [f for f in historial_fechas[digito] if f < fecha_actual]
-            if len(fechas_digito) == 0: es_doble_normal = False; break
-            gaps = pd.Series(fechas_digito).diff().dt.days.dropna()
-            if len(gaps) == 0: es_doble_normal = False; break
-            promedio_gap = gaps.median()
-            gap_actual = (fecha_actual - fechas_digito[-1]).days
-            if calcular_estado_actual(gap_actual, promedio_gap) != 'Normal':
-                es_doble_normal = False; break
-        
-        if es_doble_normal:
-            total_doble_normal += 1
-            fechas_numero = [f for f in historial_fechas[numero_actual] if f < fecha_actual]
-            if not fechas_numero: continue
-            gaps_num = pd.Series(fechas_numero).diff().dt.days.dropna()
-            if len(gaps_num) == 0: continue
-            promedio_gap_num = gaps_num.median()
-            gap_actual_num = (fecha_actual - fechas_numero[-1]).days
-            estado_num = calcular_estado_actual(gap_actual_num, promedio_gap_num)
-            comportamiento[estado_num] += 1
-            
-    if total_doble_normal == 0:
-        st.warning("No se encontraron números 'Doble Normal' en el historial reciente.")
-        return pd.DataFrame()
-
-    df_comportamiento = pd.DataFrame(list(comportamiento.items()), columns=['Estado del Número', 'Cantidad'])
-    df_comportamiento['Porcentaje'] = (df_comportamiento['Cantidad'] / total_doble_normal * 100).round(1)
-    return df_comportamiento
-
-# --- FUNCIÓN TABLA HISTÓRICO VISUAL (ORDEN Y CÁLCULO CORREGIDOS) ---
+# --- FUNCIÓN TABLA HISTÓRICO VISUAL ---
 def crear_tabla_historico_visual_fijo(df_historial, num_ultimos=30):
     df_fijo = df_historial[df_historial['Posicion'] == 'Fijo'].copy()
     if df_fijo.empty:
@@ -518,34 +415,35 @@ def crear_tabla_historico_visual_fijo(df_historial, num_ultimos=30):
                 
                 df_hasta_fecha = df_fijo[df_fijo['Fecha'] < fecha].copy()
                 
-                def get_estado_en_fecha(num, df_hist, fecha_limite):
-                    df_num = df_hist[df_hist['Numero'] == num]['Fecha'].sort_values()
-                    if len(df_num) == 0: return 'Normal', 0, 0
-                    gaps = df_num.diff().dt.days.dropna()
-                    if len(gaps) == 0: return 'Normal', 0, 0
-                    promedio = gaps.median() 
-                    ultima_fecha = df_num.max()
-                    gap = (fecha_limite - ultima_fecha).days
-                    estado = calcular_estado_actual(gap, promedio)
-                    return estado, gap, promedio
+                # Calculamos estado Decena
+                fechas_dec = df_hasta_fecha[df_hasta_fecha['Numero'] // 10 == (numero // 10)]['Fecha'].sort_values()
+                gaps_dec = fechas_dec.diff().dt.days.dropna()
+                prom_dec = gaps_dec.median() if len(gaps_dec) > 0 else 0
+                gap_dec = (fecha - fechas_dec.max()).days if not fechas_dec.empty else 0
+                estado_dec = calcular_estado_actual(gap_dec, prom_dec)
                 
-                decena, unidad = numero // 10, numero % 10
-                estado_dec, _, _ = get_estado_en_fecha(decena, df_hasta_fecha, fecha)
-                estado_uni, _, _ = get_estado_en_fecha(unidad, df_hasta_fecha, fecha)
+                # Calculamos estado Unidad
+                fechas_uni = df_hasta_fecha[df_hasta_fecha['Numero'] % 10 == (numero % 10)]['Fecha'].sort_values()
+                gaps_uni = fechas_uni.diff().dt.days.dropna()
+                prom_uni = gaps_uni.median() if len(gaps_uni) > 0 else 0
+                gap_uni = (fecha - fechas_uni.max()).days if not fechas_uni.empty else 0
+                estado_uni = calcular_estado_actual(gap_uni, prom_uni)
                 
                 es_doble_normal = (estado_dec == 'Normal' and estado_uni == 'Normal')
                 
-                estado_num, _, _ = get_estado_en_fecha(numero, df_hasta_fecha, fecha)
-                
-                contexto_hist = df_hasta_fecha
-                df_freq_total = contexto_hist['Numero'].value_counts().reset_index()
+                # Frecuencia
+                df_freq_total = df_hasta_fecha['Numero'].value_counts().reset_index()
                 df_freq_total.columns = ['Numero', 'Total_Salidas_Historico']
                 df_freq = crear_mapa_de_calor_numeros(df_freq_total)
                 row = df_freq[df_freq['Numero'] == numero]
-                if not row.empty:
-                    temp = row['Temperatura'].iloc[0]
-                else:
-                    temp = 'N/A'
+                temp = row['Temperatura'].iloc[0] if not row.empty else 'N/A'
+
+                # Estado número completo
+                fechas_num = df_hasta_fecha[df_hasta_fecha['Numero'] == numero]['Fecha'].sort_values()
+                gaps_num = fechas_num.diff().dt.days.dropna()
+                prom_num = gaps_num.median() if len(gaps_num) > 0 else 0
+                gap_num_val = (fecha - fechas_num.max()).days if not fechas_num.empty else 0
+                estado_num = calcular_estado_actual(gap_num_val, prom_num)
 
                 historial_visual.append({
                     'Fecha': fecha.strftime('%d/%m/%Y'),
@@ -558,25 +456,39 @@ def crear_tabla_historico_visual_fijo(df_historial, num_ultimos=30):
 
     return pd.DataFrame(historial_visual)
 
-# --- FUNCIÓN ESTRATEGIA TENDENCIA (CON ESTADOS Y CRUCE) ---
+# --- FUNCIÓN ESTRATEGIA TENDENCIA (ACTUALIZADA PARA COINCIDIR) ---
 def generar_estrategia_tendencia(df_historial, fecha_referencia):
     df_fijo = df_historial[df_historial['Posicion'] == 'Fijo'].copy()
     df_fijo_analisis = df_fijo[df_fijo['Fecha'] < fecha_referencia].copy()
     
     if df_fijo_analisis.empty: return pd.DataFrame(), [], [], []
 
-    estados_digito = {d: {'estado': 'Normal', 'gap': 0, 'promedio': 0} for d in range(10)}
+    # Calculamos estados de dígitos (Posicionales)
+    estados_decena = {}
+    estados_unidad = {}
+    
     for d in range(10):
-        numeros_con_digito = [n for n in range(100) if n // 10 == d or n % 10 == d]
-        fechas_digito = df_fijo_analisis[df_fijo_analisis['Numero'].isin(numeros_con_digito)]['Fecha'].sort_values()
-        gaps = fechas_digito.diff().dt.days.dropna()
-        if len(gaps) > 0:
-            promedio_gap = gaps.median()
-            ultima_fecha = fechas_digito.max()
-            gap_actual = (fecha_referencia - ultima_fecha).days
-            estado = calcular_estado_actual(gap_actual, promedio_gap)
-            estados_digito[d] = {'estado': estado, 'gap': gap_actual, 'promedio': promedio_gap}
+        # Decena d (números d0-d9)
+        fechas_dec = df_fijo_analisis[df_fijo_analisis['Numero'] // 10 == d]['Fecha'].sort_values()
+        if len(fechas_dec) > 0:
+            gaps = fechas_dec.diff().dt.days.dropna()
+            prom = gaps.median() if len(gaps) > 0 else 0
+            gap_act = (fecha_referencia - fechas_dec.max()).days
+            estados_decena[d] = {'estado': calcular_estado_actual(gap_act, prom), 'gap': gap_act, 'promedio': prom}
+        else:
+            estados_decena[d] = {'estado': 'Normal', 'gap': 0, 'promedio': 0}
 
+        # Unidad d (números _d)
+        fechas_uni = df_fijo_analisis[df_fijo_analisis['Numero'] % 10 == d]['Fecha'].sort_values()
+        if len(fechas_uni) > 0:
+            gaps = fechas_uni.diff().dt.days.dropna()
+            prom = gaps.median() if len(gaps) > 0 else 0
+            gap_act = (fecha_referencia - fechas_uni.max()).days
+            estados_unidad[d] = {'estado': calcular_estado_actual(gap_act, prom), 'gap': gap_act, 'promedio': prom}
+        else:
+            estados_unidad[d] = {'estado': 'Normal', 'gap': 0, 'promedio': 0}
+
+    # Estados números individuales
     estados_numero = {n: {'estado': 'Normal', 'gap': 0, 'promedio': 0} for n in range(100)}
     for n in range(100):
         fechas_num = df_fijo_analisis[df_fijo_analisis['Numero'] == n]['Fecha'].sort_values()
@@ -585,14 +497,14 @@ def generar_estrategia_tendencia(df_historial, fecha_referencia):
             promedio_gap = gaps.median()
             ultima_fecha_num = fechas_num.max()
             gap_actual = (fecha_referencia - ultima_fecha_num).days
-            estado = calcular_estado_actual(gap_actual, promedio_gap)
-            estados_numero[n] = {'estado': estado, 'gap': gap_actual, 'promedio': promedio_gap}
+            estados_numero[n] = {'estado': calcular_estado_actual(gap_actual, promedio_gap), 'gap': gap_actual, 'promedio': promedio_gap}
 
     datos_completa = []
     for num in range(100):
         decena, unidad = num // 10, num % 10
-        if (estados_digito[decena]['estado'] == 'Normal' and 
-            estados_digito[unidad]['estado'] == 'Normal'):
+        # Usamos los diccionarios separados y posicionales
+        if (estados_decena[decena]['estado'] == 'Normal' and 
+            estados_unidad[unidad]['estado'] == 'Normal'):
             
             estado_num = estados_numero[num]['estado']
             datos_completa.append({
@@ -640,7 +552,7 @@ def main():
     st.sidebar.header("⚙️ Opciones de Análisis - Florida")
     
     with st.sidebar.expander("📝 Agregar Nuevo Sorteo (Actualizar CSV)", expanded=False):
-        st.caption("Actualiza los resultados rápidamente. (Notas: En la nube los datos pueden perderse tras el reinicio).")
+        st.caption("Actualiza los resultados rápidamente.")
         
         fecha_nueva = st.date_input("Fecha del sorteo:", value=datetime.now().date(), format="DD/MM/YYYY")
         
@@ -751,10 +663,6 @@ def main():
             ultimo_sorteo_N = df_analisis[df_analisis['Tipo_Sorteo'] == 'N'].iloc[-1]
             st.sidebar.info(f"Último sorteo **Noche**: {ultimo_sorteo_N['Fecha'].strftime('%d/%m/%Y')} (Fijo: {ultimo_sorteo_N['Numero']})")
         
-        frecuencia_numeros_historica_general = df_historial_completo['Numero'].value_counts().reset_index()
-        frecuencia_numeros_historica_general.columns = ['Numero', 'Total_Salidas_Historico']
-        df_clasificacion_general = crear_mapa_de_calor_numeros(frecuencia_numeros_historica_general)
-        
         df_estados_completos, historicos_numero = get_full_state_dataframe(df_analisis, fecha_referencia)
         
         if df_estados_completos.empty:
@@ -771,7 +679,7 @@ def main():
         df_oportunidad_decenas, df_oportunidad_unidades, top_candidatos, mapa_temp_decenas, mapa_temp_unidades = analizar_oportunidad_por_digito(
             df_analisis, df_estados_completos, historicos_numero, 
             modo_temperatura, fecha_inicio_rango_safe, fecha_fin_rango_safe,
-            top_n_candidatos
+            top_n_candidatos, fecha_referencia=fecha_referencia
         )
         
         # --- SECCIÓN 1: NÚMEROS CON OPORTUNIDAD ---
@@ -815,114 +723,12 @@ def main():
             st.metric("🧊 Fríos (Últimos 40)", f"{len(df_clasificacion_actual[df_clasificacion_actual['Temperatura'] == '🧊 Frío'])} números")
             frios_lista = df_clasificacion_actual[df_clasificacion_actual['Temperatura'] == '🧊 Frío']['Numero'].tolist()
             st.write(", ".join(map(str, frios_lista)))
-        
-        # --- SECCIÓN 3: ESTADO DE LOS GRUPOS ---
-        st.markdown("---")
-        st.header("📊 Estado de los Grupos por Temperatura (Rendimiento Reciente)")
-        st.info(f"📅 **Período de Análisis:** Se compara el rendimiento de los últimos **7 días** (hasta el {fecha_referencia.strftime('%d/%m/%Y')}) con el promedio histórico.")
 
-        def calcular_estado_grupo_corregido(df_historial, df_clasificacion_actual, fecha_referencia, dias_recientes=7):
-            resultados = {}
-            df_historial_filtrado = df_historial[df_historial['Fecha'] < fecha_referencia].copy()
-            total_dias_historia = (df_historial_filtrado['Fecha'].max() - df_historial_filtrado['Fecha'].min()).days + 1
-            if total_dias_historia == 0: return {}
-
-            for temp in ['🔥 Caliente', '🟡 Tibio', '🧊 Frío']:
-                numeros_grupo = df_clasificacion_actual[df_clasificacion_actual['Temperatura'] == temp]['Numero'].tolist()
-                
-                if len(numeros_grupo) == 0: continue
-
-                apariciones_historicas_grupo = df_historial_filtrado[df_historial_filtrado['Numero'].isin(numeros_grupo)]
-                
-                frecuencia_historia = len(apariciones_historicas_grupo) / total_dias_historia
-
-                fecha_inicio_reciente = fecha_referencia - pd.Timedelta(days=dias_recientes)
-                df_reciente = df_historial_filtrado[df_historial_filtrado['Fecha'] >= fecha_inicio_reciente]
-                apariciones_recientes_grupo = df_reciente[df_reciente['Numero'].isin(numeros_grupo)]
-                frecuencia_reciente = len(apariciones_recientes_grupo) / dias_recientes
-
-                ratio_rendimiento = frecuencia_reciente / frecuencia_historia if frecuencia_historia > 0 else 0
-                
-                if ratio_rendimiento < 0.7: estado_grupo = "Vencido (Enfriado)"
-                elif ratio_rendimiento > 1.3: estado_grupo = "Sobrecalentado"
-                else: estado_grupo = "Normal"
-                    
-                resultados[temp] = {
-                    'Estado': estado_grupo, 'Frecuencia Histórica (por día)': round(frecuencia_historia, 2),
-                    'Frecuencia Reciente (por día)': round(frecuencia_reciente, 2),
-                    'Ratio Rendimiento (%)': round(ratio_rendimiento * 100, 1),
-                    'Total Apariciones (7 días)': len(apariciones_recientes_grupo), 'Total Números': len(numeros_grupo)
-                }
-            return resultados
-
-        grupos_estado_corregido = calcular_estado_grupo_corregido(df_analisis, df_clasificacion_actual, fecha_referencia)
-        
-        # --- SECCIÓN 3.5: SUGERENCIA ESTRATÉGICA MEJORADA ---
-        st.markdown("---")
-        st.header("💡 Sugerencia Estratégica Basada en Tendencias (Prioridad por Grupo)")
-        
-        if grupos_estado_corregido:
-            # Definir orden de prioridad
-            priority_map = {
-                "Vencido (Enfriado)": 1,
-                "Normal": 2,
-                "Sobrecalentado": 3
-            }
-            
-            df_grupos_estado = pd.DataFrame.from_dict(grupos_estado_corregido, orient='index').reset_index()
-            df_grupos_estado.rename(columns={'index': 'Grupo'}, inplace=True)
-            
-            # Añadir columna de prioridad y ordenar
-            df_grupos_estado['Prioridad'] = df_grupos_estado['Estado'].map(priority_map)
-            df_grupos_estado = df_grupos_estado.sort_values(by='Prioridad')
-            
-            # Mostrar tabla resumen de estados
-            st.subheader("Resumen de Estado de Grupos")
-            st.dataframe(df_grupos_estado[['Grupo', 'Estado', 'Prioridad']], width='stretch', hide_index=True)
-            
-            st.markdown("---")
-            st.subheader("Top 5 Candidatos por Grupo (Ordenados por Prioridad)")
-            
-            # Iterar por cada grupo en orden de prioridad
-            for index, row in df_grupos_estado.iterrows():
-                grupo = row['Grupo']
-                estado = row['Estado']
-                
-                # Mostrar header del grupo con su estado
-                st.markdown(f"### 🏆 Prioridad {row['Prioridad']}: {grupo} ({estado})")
-                
-                # Obtener números del grupo
-                numeros_grupo = df_clasificacion_actual[df_clasificacion_actual['Temperatura'] == grupo]['Numero'].tolist()
-                
-                # Cruzar con estados completos para buscar vencidos
-                df_grupo_con_estados = df_estados_completos[df_estados_completos['Numero'].isin(numeros_grupo)]
-                
-                # Buscar primero los Vencidos o Muy Vencidos
-                df_grupo_vencidos = df_grupo_con_estados[df_grupo_con_estados['Estado_Numero'].isin(['Vencido', 'Muy Vencido'])]
-                
-                top_5_lista = []
-                
-                if not df_grupo_vencidos.empty:
-                    # Ordenar por Salto_Numero descendente (los más vencidos primero)
-                    df_grupo_vencidos = df_grupo_vencidos.sort_values(by='Salto_Numero', ascending=False)
-                    top_5_numeros = df_grupo_vencidos.head(5)['Numero'].tolist()
-                    
-                    st.success(f"Oportunidad (Vencidos): {', '.join([f'{n:02d}' for n in top_5_numeros])}")
-                    top_5_lista = top_5_numeros
-                else:
-                    # Si no hay vencidos, mostrar los 5 primeros del grupo (por frecuencia histórica o simplemente los primeros de la lista)
-                    # Aquí usamos el orden de df_clasificacion_actual que ya está ordenado por frecuencia
-                    top_5_normales = df_grupo_con_estados.head(5)['Numero'].tolist()
-                    st.info(f"Normales (Top 5): {', '.join([f'{n:02d}' for n in top_5_normales])}")
-                    top_5_lista = top_5_normales
-                
-                st.markdown("---") # Separador entre grupos
-        else: 
-            st.warning("No se pudo calcular el estado de los grupos.")
-        
-        # --- SECCIÓN 4: ANÁLISIS DE OPORTUNIDAD POR DÍGITO ---
+        # --- SECCIÓN 3: ANÁLISIS DE OPORTUNIDAD POR DÍGITO ---
         st.markdown("---")
         st.header("🎯 Análisis de Oportunidad por Dígito (Decenas y Unidades)")
+        st.info("Esta tabla ahora coincide exactamente con la lógica de 'Doble Normal' usada en la Estrategia de Tendencia.")
+        
         col_dec, col_uni = st.columns(2)
         with col_dec:
             st.subheader("📊 Oportunidad por Decena")
@@ -935,42 +741,17 @@ def main():
         st.subheader(f"🏆 Top {top_n_candidatos} Números Candidatos (Puntuación Combinada)")
         st.dataframe(top_candidatos, width='stretch', hide_index=True)
         
-        # --- SECCIÓN 5: MAPA DE CALOR POSICIONAL ---
+        # --- SECCIÓN 4: AUDITORÍA HISTÓRICA ---
         st.markdown("---")
-        st.header("🗺️ Mapa de Calor Posicional")
-        st.info(f"ℹ️ **Contexto del Análisis:** Este mapa se basa en la temperatura de los dígitos calculada según el modo seleccionado ('{modo_temperatura}').")
+        st.header("🔍 Auditoría Histórica de 'Doble Normal' (Corroboración de Aciertos)")
+        st.markdown("Historia de los últimos 100 eventos 'Doble Normal' y el tiempo transcurrido desde el anterior.")
         
-        df_mapa_calor = crear_mapa_calor_posicional(mapa_temp_decenas, mapa_temp_unidades)
-        df_hot_cold, df_cold_hot, df_hot_hot, df_cold_cold = analizar_combinaciones_extremas(mapa_temp_decenas, mapa_temp_unidades, df_estados_completos)
+        df_auditoria = generar_auditoria_doble_normal(df_analisis)
         
-        st.subheader("Mapa de Calor de Combinaciones Posicionales")
-        st.markdown("**Cómo leer este mapa:** - **Eje X:** Dígito de la Decena (0-9) - **Eje Y:** Dígito de la Unidad (0-9) - **Colores:** Representan la combinación de temperatura.")
+        if not df_auditoria.empty:
+            st.dataframe(df_auditoria, width='stretch', hide_index=True)
         
-        cmap = sns.color_palette("RdYlGn_r", as_cmap=True)
-        fig, ax = plt.subplots(figsize=(12, 10))
-        sns.heatmap(df_mapa_calor, annot=True, fmt=".0f", cmap=cmap, center=22, xticklabels=range(10), yticklabels=range(10), cbar_kws={'label': 'Puntuación de Temperatura Combinada'})
-        ax.set_xlabel('Dígito de la Decena'); ax.set_ylabel('Dígito de la Unidad'); ax.set_title('Mapa de Calor Posicional')
-        st.pyplot(fig)
-        
-        st.markdown("---")
-        st.subheader("📊 Análisis de Combinaciones Extremas")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🔥🧊 Caliente-Frío (Máxima Oportunidad"); st.markdown("Números donde la decena está muy caliente y la unidad muy fría.")
-            if not df_hot_cold.empty: st.dataframe(df_hot_cold, width='stretch', hide_index=True)
-            else: st.warning("No hay combinaciones Caliente-Frío.")
-            st.markdown("---"); st.subheader("🔥🔥 Doble Caliente (Alta Probabilidad)"); st.markdown("Números donde ambas posiciones están muy calientes.")
-            if not df_hot_hot.empty: st.dataframe(df_hot_hot, width='stretch', hide_index=True)
-            else: st.warning("No hay combinaciones Doble Caliente.")
-        with col2:
-            st.subheader("🧊🔥 Frío-Caliente (Segunda Oportunidad"); st.markdown("Números donde la unidad está muy caliente y la decena muy fría.")
-            if not df_cold_hot.empty: st.dataframe(df_cold_hot, width='stretch', hide_index=True)
-            else: st.warning("No hay combinaciones Frío-Caliente.")
-            st.markdown("---"); st.subheader("🧊🧊 Doble Frío (Posible Sorpresa)"); st.markdown("Números donde ambas posiciones están muy frías.")
-            if not df_cold_cold.empty: st.dataframe(df_cold_cold, width='stretch', hide_index=True)
-            else: st.write("No hay combinaciones Doble Frío.")
-
-        # --- SECCIÓN 6: PATRONES SECUENCIALES ---
+        # --- SECCIÓN 5: PATRONES SECUENCIALES ---
         st.markdown("---")
         st.header("🔍 Búsqueda de Patrones Secuenciales")
         st.markdown("Busca patrones en la columna Fijo.")
@@ -1019,37 +800,7 @@ def main():
         else: 
             st.warning("No se encontraron patrones.")
 
-        # --- NUEVA SECCIÓN: AUDITORÍA HISTÓRICA (OPTIMIZADA) ---
-        st.markdown("---")
-        st.header("🔍 Auditoría Histórica de 'Doble Normal' (Corroboración de Aciertos)")
-        st.markdown("Historia de los últimos 100 eventos 'Doble Normal' y el tiempo transcurrido desde el anterior.")
-        
-        df_auditoria = generar_auditoria_doble_normal(df_analisis)
-        
-        if not df_auditoria.empty:
-            st.dataframe(df_auditoria, width='stretch', hide_index=True)
-            
-            st.subheader("📊 Distribución de Tiempo (Días entre aciertos Doble Normal)")
-            gaps_auditoria = df_auditoria['Días desde el anterior (Doble Normal)'].dropna()
-            
-            if not gaps_auditoria.empty:
-                fig_hist, ax_hist = plt.subplots(figsize=(10, 6))
-                sns.histplot(gaps_auditoria, bins=range(1, 21), kde=True, ax=ax_hist, color='skyblue')
-                ax_hist.set_title("Distribución de 'Días desde el anterior'")
-                ax_hist.set_xlabel("Días desde el último acierto")
-                ax_hist.set_ylabel("Frecuencia")
-                st.pyplot(fig_hist)
-            else:
-                st.info("No hay suficientes datos para calcular el tiempo entre aciertos.")
-        
-        # --- SECCIÓN 7: COMPORTAMIENTO DOBLE NORMAL (OPTIMIZADA) ---
-        st.markdown("---")
-        st.header("📊 Análisis de Comportamiento del 'Doble Normal' (Últimos 200 sorteos)")
-        df_comportamiento = analizar_comportamiento_doble_normal(df_analisis)
-        if not df_comportamiento.empty:
-            st.dataframe(df_comportamiento, width='stretch', hide_index=True)
-        
-        # --- SECCIÓN 8: MATRIZ COMPLETA Y CANDIDATOS (MEJORADA) ---
+        # --- SECCIÓN 6: MATRIZ COMPLETA Y CANDIDATOS ---
         st.markdown("---")
         st.header("🧠 Generador y Evaluador de Estrategia de Tendencia")
         
@@ -1057,12 +808,8 @@ def main():
         
         df_completa, candidatos_finales, candidatos_vencidos, candidatos_normales = generar_estrategia_tendencia(df_analisis, fecha_referencia)
         
-        # --- LÓGICA DE CRUCE DE ACIERTOS (RESALTADO) ---
         if not df_completa.empty:
-            # Buscar qué números realmente salieron en la fecha de referencia
             resultados_del_dia = df_analisis[df_analisis['Fecha'] == fecha_referencia]['Numero'].tolist()
-            
-            # Crear columna de acierto
             df_completa['¿Salió Hoy?'] = df_completa['Número'].isin(resultados_del_dia)
             
             def resaltar_aciertos(row):
@@ -1090,7 +837,6 @@ def main():
         else:
             st.info("No hay números 'Doble Normal' para hoy.")
         
-        # --- PRONÓSTICOS INTACTOS ---
         st.markdown("---")
         if candidatos_vencidos:
             st.warning(f"🔥 **Candidatos Urgentes (Doble Normal Vencidos)**: {len(candidatos_vencidos)} números.")
@@ -1111,7 +857,7 @@ def main():
         else:
             st.warning("La estrategia no encuentra candidatos que cumplan los criterios para hoy.")
 
-        # --- SECCIÓN 9: HISTORIAL VISUAL ENRIQUECIDA ---
+        # --- SECCIÓN 7: HISTORIAL VISUAL ENRIQUECIDA ---
         st.markdown("---")
         st.header("📊 Historial Visual Enriquecido (Últimos 30 Fijos)")
         st.markdown("Tabla ordenada cronológicamente. El evento más reciente (Noche de hoy) aparece arriba.")
@@ -1131,44 +877,6 @@ def main():
                 return ['background-color: #d4edda' if row['Es Doble Normal'] else '' for _ in row]
             
             st.dataframe(df_historico_visual.style.apply(resaltar_fila_doble_normal, axis=1), width='stretch', hide_index=True)
-
-        # --- SECCIÓN 10: COMPARACIÓN DE SESIONES ---
-        if modo_sorteo != "Análisis General (Todos los sorteos)":
-            st.markdown("---")
-            st.header("🔍 Comparación de Sesiones")
-            st.markdown(f"Comparación de los Top 10 números de la sesión actual ({modo_sorteo.split(':')[-1].strip()}) con su rendimiento en las otras sesiones y en el análisis general.")
-
-            top_10_actual = df_clasificacion_actual.head(10)
-            numeros_top_10 = top_10_actual['Numero'].tolist()
-
-            sesion_actual_key = modo_sorteo.split(':')[-1].strip()
-            otras_sesiones = [k for k in ['T', 'N'] if k != sesion_actual_key]
-            
-            datos_comparacion = []
-            for num in numeros_top_10:
-                fila = {'Número': f"{num:02d}"}
-                freq_actual = df_analisis[df_analisis['Numero'] == num].shape[0]
-                fila[f'Frecuencia en {modo_sorteo.split(":")[-1].strip()}'] = freq_actual
-                for key in otras_sesiones:
-                    df_otra_sesion = df_historial_completo[df_historial_completo['Tipo_Sorteo'] == key]
-                    freq_otra = df_otra_sesion[df_otra_sesion['Numero'] == num].shape[0]
-                    fila[f'Frecuencia en {key}'] = freq_otra
-                freq_general = df_historial_completo[df_historial_completo['Numero'] == num].shape[0]
-                fila['Frecuencia General'] = freq_general
-                temp_general = df_clasificacion_general[df_clasificacion_general['Numero'] == num]['Temperatura'].iloc[0]
-                fila['Temperatura General'] = temp_general
-                
-                datos_comparacion.append(fila)
-                
-            df_comparacion = pd.DataFrame(datos_comparacion)
-            st.dataframe(df_comparacion, width='stretch', hide_index=True)
-            
-            st.markdown("""
-            **Cómo interpretar esta tabla:**
-            - Compara si los números más fuertes de la sesión actual también lo son en el contexto general o en otras sesiones.
-            - Un número 'Caliente' en una sesión pero 'Frío' en el general podría indicar un patrón específico de esa sesión.
-            - Un número 'Caliente' en todas las categorías es un candidato muy robusto.
-            """)
 
 if __name__ == "__main__":
     main()
