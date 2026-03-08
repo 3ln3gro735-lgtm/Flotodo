@@ -136,11 +136,10 @@ def calcular_estado_actual(gap, promedio_gap):
     else: 
         return "Vencido"
 
-# --- FUNCIÓN PARA OBTENER ESTADO COMPLETO DE NÚMEROS (CORREGIDO: USA SOLO FIJO) ---
+# --- FUNCIÓN PARA OBTENER ESTADO COMPLETO DE NÚMEROS (USA SOLO FIJO) ---
 def get_full_state_dataframe(df_historial, fecha_referencia):
     st.info(f"📅 **Análisis de Estado:** Calculando el estado de todos los números (Solo Fijos) hasta la fecha **{fecha_referencia.strftime('%d/%m/%Y')}**.")
     
-    # FILTRO IMPORTANTE: Solo usamos Fijos para calcular estados de números
     df_fijos_hist = df_historial[df_historial['Posicion'] == 'Fijo'].copy()
     df_fijos_filtrado = df_fijos_hist[df_fijos_hist['Fecha'] < fecha_referencia].copy()
     
@@ -169,7 +168,6 @@ def get_full_state_dataframe(df_historial, fecha_referencia):
     df_maestro['Estado_Numero'] = df_maestro.apply(lambda row: calcular_estado_actual(row['Salto_Numero'], historicos_numero[row['Numero']]), axis=1)
     df_maestro['Última Aparición (Fecha)'] = ultima_aparicion_num_key.dt.strftime('%d/%m/%Y')
     
-    # Frecuencia también basada solo en Fijos para consistencia
     frecuencia = df_fijos_filtrado['Numero'].value_counts().reindex(range(100)).fillna(0)
     df_maestro['Total_Salidas_Historico'] = frecuencia
 
@@ -184,12 +182,10 @@ def crear_mapa_de_calor_numeros(df_frecuencia, top_n=30, medio_n=30):
         df_ordenado.loc[0 : top_n - 1, 'Temperatura'] = '🔥 Caliente'
     return df_ordenado
 
-# --- FUNCIÓN PARA ANÁLISIS DE OPORTUNIDAD POR DÍGITO (CORREGIDO: USA SOLO FIJO) ---
+# --- FUNCIÓN PARA ANÁLISIS DE OPORTUNIDAD POR DÍGITO (USA SOLO FIJO) ---
 def analizar_oportunidad_por_digito(df_historial, df_estados_completos, historicos_numero, modo_temperatura, fecha_inicio_rango, fecha_fin_rango, top_n_candidatos=5, fecha_referencia=None):
     st.info(f"🎯 **Análisis de Oportunidad por Dígito:** Iniciando análisis en modo: **{modo_temperatura}**.")
     
-    # 1. Cálculo de TEMPERATURA (Solo Fijos para consistencia estadística)
-    # Se filtra solo Fijo para evitar que los corridos inflen la temperatura
     df_base_fijos = df_historial[df_historial['Posicion'] == 'Fijo'].copy()
 
     if modo_temperatura == "Histórico Completo":
@@ -225,13 +221,12 @@ def analizar_oportunidad_por_digito(df_historial, df_estados_completos, historic
     mapa_temp_decenas = pd.Series(df_frecuencia_decenas.Temperatura.values, index=df_frecuencia_decenas.Dígito).to_dict()
     mapa_temp_unidades = pd.Series(df_frecuencia_unidades.Temperatura.values, index=df_frecuencia_unidades.Dígito).to_dict()
     
-    # 2. Cálculo de ESTADO (Normal/Vencido) - CORREGIDO: Usa solo Fijos
     df_hist_estado = df_base_fijos[df_base_fijos['Fecha'] < fecha_referencia].copy()
     
     def calcular_estado_digito_posicion(df, digito, tipo):
         if tipo == 'decena':
             fechas = df[df['Numero'] // 10 == digito]['Fecha'].sort_values()
-        else: # unidad
+        else: 
             fechas = df[df['Numero'] % 10 == digito]['Fecha'].sort_values()
         
         if fechas.empty: return 'Normal', 0, 0
@@ -247,20 +242,15 @@ def analizar_oportunidad_por_digito(df_historial, df_estados_completos, historic
     resultados_unidades = []
     
     for i in range(10):
-        # Decenas
         estado_dec, gap_dec, prom_dec = calcular_estado_digito_posicion(df_hist_estado, i, 'decena')
-        # Unidades
         estado_uni, gap_uni, prom_uni = calcular_estado_digito_posicion(df_hist_estado, i, 'unidad')
 
-        # Puntuación
         puntuacion_base_decena = {'Muy Vencido': 100, 'Vencido': 50, 'Normal': 0}[estado_dec]
         puntuacion_base_unidad = {'Muy Vencido': 100, 'Vencido': 50, 'Normal': 0}[estado_uni]
 
-        # Proactiva
         puntuacion_proactiva_decena = min(49, (gap_dec / prom_dec * 50) if prom_dec > 0 and estado_dec == 'Normal' else 0)
         puntuacion_proactiva_unidad = min(49, (gap_uni / prom_uni * 50) if prom_uni > 0 and estado_uni == 'Normal' else 0)
 
-        # Temperatura
         puntuacion_temperatura_map = {'🔥 Caliente': 30, '🟡 Tibio': 20, '🧊 Frío': 10}
         temperatura_decena = mapa_temp_decenas.get(i, '🟡 Tibio')
         temperatura_unidad = mapa_temp_unidades.get(i, '🟡 Tibio')
@@ -276,7 +266,6 @@ def analizar_oportunidad_por_digito(df_historial, df_estados_completos, historic
     df_oportunidad_decenas = pd.DataFrame(resultados_decenas)
     df_oportunidad_unidades = pd.DataFrame(resultados_unidades)
 
-    # Candidatos combinados
     puntuacion_decena_map = df_oportunidad_decenas.set_index('Dígito')['Puntuación Total'].to_dict()
     puntuacion_unidad_map = df_oportunidad_unidades.set_index('Dígito')['Puntuación Total'].to_dict()
 
@@ -292,7 +281,7 @@ def analizar_oportunidad_por_digito(df_historial, df_estados_completos, historic
 
     return df_oportunidad_decenas, df_oportunidad_unidades, df_candidatos, mapa_temp_decenas, mapa_temp_unidades
 
-# --- FUNCIÓN PARA AUDITORÍA HISTÓRICA (CORREGIDO: USA SOLO FIJO) ---
+# --- FUNCIÓN PARA AUDITORÍA HISTÓRICA (ORDEN CORREGIDO) ---
 def generar_auditoria_doble_normal(df_historial):
     st.info("🔍 **Auditoría Histórica:** Buscando los últimos 100 eventos 'Doble Normal' (Solo Fijos).")
     
@@ -310,6 +299,7 @@ def generar_auditoria_doble_normal(df_historial):
     
     auditoria = []
     
+    # Iteramos en orden cronológico para calcular correctamente los "Días desde el anterior"
     for i, fecha in enumerate(fechas_unicas):
         df_hasta_ahora = df_fijo[df_fijo['Fecha'] < fecha].copy()
         sorteos_fecha = df_fijo[df_fijo['Fecha'] == fecha].sort_values(by='Tipo_Sorteo') 
@@ -319,14 +309,12 @@ def generar_auditoria_doble_normal(df_historial):
             decena = numero // 10
             unidad = numero % 10
             
-            # Estado Decena
             fechas_dec = df_hasta_ahora[df_hasta_ahora['Numero'] // 10 == decena]['Fecha'].sort_values()
             gaps_dec = fechas_dec.diff().dt.days.dropna()
             prom_dec = gaps_dec.median() if len(gaps_dec) > 0 else 0
             gap_dec_actual = (fecha - fechas_dec.max()).days if not fechas_dec.empty else 0
             estado_dec = calcular_estado_actual(gap_dec_actual, prom_dec)
             
-            # Estado Unidad
             fechas_uni = df_hasta_ahora[df_hasta_ahora['Numero'] % 10 == unidad]['Fecha'].sort_values()
             gaps_uni = fechas_uni.diff().dt.days.dropna()
             prom_uni = gaps_uni.median() if len(gaps_uni) > 0 else 0
@@ -357,12 +345,16 @@ def generar_auditoria_doble_normal(df_historial):
     
     df_auditoria = pd.DataFrame(auditoria)
     if not df_auditoria.empty:
+        # ORDENAMIENTO CORREGIDO:
+        # 1. Fecha Descendente (Más reciente arriba).
+        # 2. Sesión Ascendente: 'N' (Noche) viene antes que 'T' (Tarde) alfabéticamente, 
+        #    por lo que ascendente pone Noche arriba y Tarde abajo en la misma fecha.
+        df_auditoria = df_auditoria.sort_values(by=['Fecha', 'Sesión'], ascending=[False, True]).reset_index(drop=True)
         df_auditoria['Fecha'] = df_auditoria['Fecha'].dt.strftime('%d/%m/%Y')
-        df_auditoria = df_auditoria.sort_values(by='Fecha', ascending=False).reset_index(drop=True)
     
     return df_auditoria
 
-# --- FUNCIÓN PARA BUSCAR PATRONES (CORREGIDO: USA SOLO FIJO) ---
+# --- FUNCIÓN PARA BUSCAR PATRONES (USA SOLO FIJO) ---
 def buscar_patrones_secuenciales(df_historial, max_longitud=3, nombre_sesion="General"):
     df_fijo = df_historial[df_historial['Posicion'] == 'Fijo'].copy()
     if df_fijo.empty:
@@ -388,7 +380,7 @@ def buscar_patrones_secuenciales(df_historial, max_longitud=3, nombre_sesion="Ge
         patrones_ordenados[patron] = siguientes_ordenados
     return patrones_ordenados
 
-# --- FUNCIÓN TABLA HISTÓRICO VISUAL (CORREGIDO: USA SOLO FIJO) ---
+# --- FUNCIÓN TABLA HISTÓRICO VISUAL (USA SOLO FIJO) ---
 def crear_tabla_historico_visual_fijo(df_historial, num_ultimos=30):
     df_fijo = df_historial[df_historial['Posicion'] == 'Fijo'].copy()
     if df_fijo.empty:
@@ -403,6 +395,7 @@ def crear_tabla_historico_visual_fijo(df_historial, num_ultimos=30):
     historial_visual = []
     
     for fecha in ultimas_fechas:
+        # Ordenamos primero N luego T para visualización
         for sesion_key, sesion_nombre in [('N', 'Noche'), ('T', 'Tarde')]:
             resultado = df_fijo[(df_fijo['Fecha'] == fecha) & (df_fijo['Tipo_Sorteo'] == sesion_key)]
             if not resultado.empty:
@@ -410,14 +403,12 @@ def crear_tabla_historico_visual_fijo(df_historial, num_ultimos=30):
                 
                 df_hasta_fecha = df_fijo[df_fijo['Fecha'] < fecha].copy()
                 
-                # Calculamos estado Decena
                 fechas_dec = df_hasta_fecha[df_hasta_fecha['Numero'] // 10 == (numero // 10)]['Fecha'].sort_values()
                 gaps_dec = fechas_dec.diff().dt.days.dropna()
                 prom_dec = gaps_dec.median() if len(gaps_dec) > 0 else 0
                 gap_dec = (fecha - fechas_dec.max()).days if not fechas_dec.empty else 0
                 estado_dec = calcular_estado_actual(gap_dec, prom_dec)
                 
-                # Calculamos estado Unidad
                 fechas_uni = df_hasta_fecha[df_hasta_fecha['Numero'] % 10 == (numero % 10)]['Fecha'].sort_values()
                 gaps_uni = fechas_uni.diff().dt.days.dropna()
                 prom_uni = gaps_uni.median() if len(gaps_uni) > 0 else 0
@@ -426,14 +417,12 @@ def crear_tabla_historico_visual_fijo(df_historial, num_ultimos=30):
                 
                 es_doble_normal = (estado_dec == 'Normal' and estado_uni == 'Normal')
                 
-                # Frecuencia
                 df_freq_total = df_hasta_fecha['Numero'].value_counts().reset_index()
                 df_freq_total.columns = ['Numero', 'Total_Salidas_Historico']
                 df_freq = crear_mapa_de_calor_numeros(df_freq_total)
                 row = df_freq[df_freq['Numero'] == numero]
                 temp = row['Temperatura'].iloc[0] if not row.empty else 'N/A'
 
-                # Estado número completo
                 fechas_num = df_hasta_fecha[df_hasta_fecha['Numero'] == numero]['Fecha'].sort_values()
                 gaps_num = fechas_num.diff().dt.days.dropna()
                 prom_num = gaps_num.median() if len(gaps_num) > 0 else 0
@@ -451,19 +440,17 @@ def crear_tabla_historico_visual_fijo(df_historial, num_ultimos=30):
 
     return pd.DataFrame(historial_visual)
 
-# --- FUNCIÓN ESTRATEGIA TENDENCIA (Ya usaba solo Fijo, se mantiene) ---
+# --- FUNCIÓN ESTRATEGIA TENDENCIA (USA SOLO FIJO) ---
 def generar_estrategia_tendencia(df_historial, fecha_referencia):
     df_fijo = df_historial[df_historial['Posicion'] == 'Fijo'].copy()
     df_fijo_analisis = df_fijo[df_fijo['Fecha'] < fecha_referencia].copy()
     
     if df_fijo_analisis.empty: return pd.DataFrame(), [], [], []
 
-    # Estados dígitos (Posicionales)
     estados_decena = {}
     estados_unidad = {}
     
     for d in range(10):
-        # Decena
         fechas_dec = df_fijo_analisis[df_fijo_analisis['Numero'] // 10 == d]['Fecha'].sort_values()
         if len(fechas_dec) > 0:
             gaps = fechas_dec.diff().dt.days.dropna()
@@ -473,7 +460,6 @@ def generar_estrategia_tendencia(df_historial, fecha_referencia):
         else:
             estados_decena[d] = {'estado': 'Normal', 'gap': 0, 'promedio': 0}
 
-        # Unidad
         fechas_uni = df_fijo_analisis[df_fijo_analisis['Numero'] % 10 == d]['Fecha'].sort_values()
         if len(fechas_uni) > 0:
             gaps = fechas_uni.diff().dt.days.dropna()
@@ -483,7 +469,6 @@ def generar_estrategia_tendencia(df_historial, fecha_referencia):
         else:
             estados_unidad[d] = {'estado': 'Normal', 'gap': 0, 'promedio': 0}
 
-    # Estados números
     estados_numero = {n: {'estado': 'Normal', 'gap': 0, 'promedio': 0} for n in range(100)}
     for n in range(100):
         fechas_num = df_fijo_analisis[df_fijo_analisis['Numero'] == n]['Fecha'].sort_values()
@@ -650,7 +635,6 @@ def main():
             st.stop()
 
         st.sidebar.markdown("---")
-        # Mostrar info de último sorteo (usando Fijo)
         df_temp_fijo = df_analisis[df_analisis['Posicion'] == 'Fijo']
         if 'T' in df_temp_fijo['Tipo_Sorteo'].unique():
             ultimo_sorteo_T = df_temp_fijo[df_temp_fijo['Tipo_Sorteo'] == 'T'].iloc[-1]
@@ -665,7 +649,7 @@ def main():
             st.error("No se pudo calcular el estado de los números para la fecha de referencia.")
             st.stop()
 
-        frecuencia_numeros_historica = df_estados_completos[['Numero', 'Total_Salidas_Historico']].copy() # Ya viene filtrado por Fijo
+        frecuencia_numeros_historica = df_estados_completos[['Numero', 'Total_Salidas_Historico']].copy()
         df_clasificacion_actual = crear_mapa_de_calor_numeros(frecuencia_numeros_historica)
         
         fecha_inicio_rango_safe = pd.to_datetime(fecha_inicio_rango).tz_localize(None) if fecha_inicio_rango else None
@@ -736,10 +720,10 @@ def main():
         st.subheader(f"🏆 Top {top_n_candidatos} Números Candidatos (Puntuación Combinada)")
         st.dataframe(top_candidatos, width='stretch', hide_index=True)
         
-        # --- SECCIÓN 4: AUDITORÍA HISTÓRICA ---
+        # --- SECCIÓN 4: AUDITORÍA HISTÓRICA (ORDENADO) ---
         st.markdown("---")
         st.header("🔍 Auditoría Histórica de 'Doble Normal' (Corroboración de Aciertos)")
-        st.markdown("Historia de los últimos 100 eventos 'Doble Normal' y el tiempo transcurrido desde el anterior.")
+        st.markdown("Historia de los últimos 100 eventos 'Doble Normal'. Ordenado por fecha descendente (Noche antes de Tarde).")
         
         df_auditoria = generar_auditoria_doble_normal(df_analisis)
         
@@ -804,7 +788,6 @@ def main():
         df_completa, candidatos_finales, candidatos_vencidos, candidatos_normales = generar_estrategia_tendencia(df_analisis, fecha_referencia)
         
         if not df_completa.empty:
-            # Verificar aciertos solo con Fijos
             df_fijos_hoy = df_analisis[(df_analisis['Fecha'] == fecha_referencia) & (df_analisis['Posicion'] == 'Fijo')]
             resultados_del_dia = df_fijos_hoy['Numero'].tolist()
             
