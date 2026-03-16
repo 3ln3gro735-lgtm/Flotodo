@@ -83,7 +83,6 @@ def get_file_signature(filepath):
         return None
 
 def normalizar_numero(valor):
-    """Convierte cualquier valor a entero para comparación consistente."""
     try:
         if pd.isna(valor):
             return None
@@ -92,7 +91,6 @@ def normalizar_numero(valor):
         return None
 
 def numero_en_lista(numero, lista):
-    """Verifica si un número está en una lista, normalizando ambos a int."""
     try:
         num_normalizado = normalizar_numero(numero)
         if num_normalizado is None:
@@ -124,9 +122,6 @@ def parse_fecha_safe(fecha_str):
 
 @st.cache_data(ttl=None, show_spinner=False)
 def cargar_datos_flotodo(_ruta_csv, _file_signature):
-    """
-    Carga datos del CSV con límite de 1000 sorteos para velocidad.
-    """
     try:
         if not os.path.exists(_ruta_csv):
             inicializar_archivo(_ruta_csv, ["Fecha","Tipo_Sorteo","Centena","Fijo","Primer_Corrido","Segundo_Corrido"])
@@ -221,7 +216,6 @@ def cargar_datos_flotodo(_ruta_csv, _file_signature):
         df_historial = df_historial.sort_values(by='sort_key').reset_index(drop=True)
         df_historial.drop(columns=['draw_order', 'sort_key'], inplace=True)
         
-        # === LIMITAR A ÚLTIMOS 1000 SORTEOS PARA VELOCIDAD ===
         if len(df_historial) > 1000:
             df_historial = df_historial.tail(1000).reset_index(drop=True)
         
@@ -305,7 +299,6 @@ def obtener_historial_perfiles_cacheado(df_full, ruta_cache=None):
     df_fijos = df_full[df_full['Posicion'] == 'Fijo'].copy()
     if df_fijos.empty: return pd.DataFrame()
     
-    # Limitar a últimos 1000 sorteos
     if len(df_fijos) > 1000:
         df_fijos = df_fijos.tail(1000).reset_index(drop=True)
     
@@ -404,7 +397,6 @@ def calcular_estabilidad_historica_digitos(df_full):
     return pd.DataFrame(resultados)
 
 def pre_calcular_distribuciones_perfiles(df_historial_perfiles):
-    """Pre-calcula distribuciones de TODOS los perfiles UNA VEZ."""
     if df_historial_perfiles.empty:
         return {}
     
@@ -477,9 +469,6 @@ def calcular_p75_perfil(df_historial_perfiles, perfil_objetivo):
     else: return 0
 
 def analizar_estadisticas_perfiles(df_historial_perfiles, fecha_referencia, distribuciones_cache=None):
-    """
-    COMPLETO: Incluye TODOS los campos de estadísticas (Estabilidad Última Salida, Exceso, etc.)
-    """
     if df_historial_perfiles.empty:
         return pd.DataFrame(), Counter(), None
     
@@ -554,7 +543,6 @@ def analizar_estadisticas_perfiles(df_historial_perfiles, fecha_referencia, dist
         
         last_row = ultimo_suceso_perfil[perfil]
         
-        # === ESTABILIDAD PREVIA (EXCLUYE ÚLTIMO GAP) ===
         estado_ultima_salida = "Normal"
         estabilidad_ultima_salida = 100.0
         exceso_ultima_salida = 0
@@ -562,7 +550,7 @@ def analizar_estadisticas_perfiles(df_historial_perfiles, fecha_referencia, dist
         if len(gaps) >= 1:
             gap_ultima_espera = gaps[-1]
             if len(gaps) > 1:
-                gaps_prev = gaps[:-1]  # ← EXCLUIR completamente el último gap
+                gaps_prev = gaps[:-1]
                 if len(gaps_prev) >= 4: 
                     lim_prev = int(np.percentile(gaps_prev, 75))
                 else: 
@@ -579,7 +567,6 @@ def analizar_estadisticas_perfiles(df_historial_perfiles, fecha_referencia, dist
                 estado_ultima_salida = "Normal"
                 estabilidad_ultima_salida = 100.0
         
-        # === DISTRIBUCIÓN DE ESTADOS PARA ESTE PERFIL ===
         distribucion_estados = distribuciones_cache.get(perfil, {'Normal': 33.3, 'Vencido': 33.3, 'Muy Vencido': 33.3, 'Estado_Comun': 'Normal'})
         estado_ultima_salida_str = str(estado_ultima_salida)
         porc_ultima_salida = distribucion_estados.get(estado_ultima_salida_str, 33.3)
@@ -723,7 +710,6 @@ def generar_sugerencia_fusionada(df_stats, transizioni, ultimo_perfil, df_oport_
         **Alerta RECUPERAR:** Estabilidad >60% + Estado Vencido/Muy Vencido
         **Estado Atípico:** <20% del histórico → Penaliza -50 pts
         **Estado Común:** >60% del histórico → Bonus +30 pts
-        **Estabilidad Última Salida:** Calculada EXCLUYENDO el último gap
         """)
 
     st.markdown("### 🚨 Detalle de Alertas Activas")
@@ -835,23 +821,16 @@ def generar_sugerencia_fusionada(df_stats, transizioni, ultimo_perfil, df_oport_
             """, unsafe_allow_html=True)
         except: continue
 
-# === BACKTEST ULTRA-RÁPIDO - CORREGIDO (MÁS RECIENTES PRIMERO) ===
 def ejecutar_backtest(df_full, sorteos_objetivo, debug_mode=False):
-    """
-    ULTRA-RÁPIDO: Procesa los ÚLTIMOS N sorteos (más recientes primero).
-    7 sorteos = 20-40 segundos máximo.
-    """
     if df_full.empty: return pd.DataFrame(), 0, 0, []
     
     df_fijos = df_full[df_full['Posicion'] == 'Fijo'].copy()
     if df_fijos.empty: return pd.DataFrame(), 0, 0, []
     
-    # Limitar a últimos 1000 sorteos para velocidad
     if len(df_fijos) > 1000:
         df_fijos = df_fijos.tail(1000).reset_index(drop=True)
     
     df_fijos['sort_val'] = df_fijos['Tipo_Sorteo'].map({'T': 0, 'N': 1})
-    # ORDENAR: Más reciente primero (CRÍTICO PARA BACKTEST)
     df_fijos = df_fijos.sort_values(by=['Fecha', 'sort_val'], ascending=[False, False]).reset_index(drop=True)
     
     sorteos_a_procesar = min(sorteos_objetivo, len(df_fijos))
@@ -864,15 +843,13 @@ def ejecutar_backtest(df_full, sorteos_objetivo, debug_mode=False):
     progress_bar = st.progress(0)
     start_time = time.time()
     
-    # === PROCESAR DESDE EL MÁS RECIENTE (ÍNDICE 0) ===
     for i in range(sorteos_a_procesar):
-        sorteo_actual = df_fijos.iloc[i]  # ← AHORA SÍ: Más reciente primero
+        sorteo_actual = df_fijos.iloc[i]
         fecha_ref = sorteo_actual['Fecha']
         tipo_sorteo = sorteo_actual['Tipo_Sorteo']
         resultado_real = int(sorteo_actual['Numero'])
         total_sorteos += 1
         
-        # Datos históricos hasta ANTES de este sorteo (excluye el actual)
         df_historial = df_full[df_full['Fecha'] < fecha_ref].copy()
         if len(df_historial) > 1000:
             df_historial = df_historial.tail(1000)
@@ -882,10 +859,8 @@ def ejecutar_backtest(df_full, sorteos_objetivo, debug_mode=False):
             progress_bar.progress((i + 1) / sorteos_a_procesar)
             continue
         
-        # Simplificar: Solo calcular estados de dígitos (RÁPIDO)
         df_oport_dec, df_oport_uni = analizar_oportunidad_por_digito(df_historial, fecha_ref)
         
-        # Generar predicción simplificada (sin perfiles complejos)
         prediccion = []
         if not df_oport_dec.empty and not df_oport_uni.empty:
             decenas_mv = df_oport_dec[df_oport_dec['Estado'] == 'Muy Vencido']['Dígito'].tolist()[:5]
@@ -937,7 +912,6 @@ def ejecutar_backtest(df_full, sorteos_objetivo, debug_mode=False):
     
     return pd.DataFrame(resultados), aciertos, total_sorteos, debug_logs
 
-# === TABLA DE PERSONALIDAD DE PERFILES ===
 def mostrar_tabla_personalidad_perfiles(df_historial_perfiles):
     st.header("📊 Comportamiento Histórico de Perfiles")
     st.markdown("Cada perfil tiene su propia 'personalidad' estadística (últimos 1000 sorteos).")
@@ -993,11 +967,16 @@ def main():
     if os.path.exists(RUTA_CSV):
         try:
             file_signature = get_file_signature(RUTA_CSV)
-            st.sidebar.caption(f"📄 {os.path.getsize(RUTA_CSV)} bytes")
-        except: file_signature = None
+            file_size = os.path.getsize(RUTA_CSV)
+            file_mod = datetime.fromtimestamp(os.path.getmtime(RUTA_CSV)).strftime('%d/%m %H:%M')
+            st.sidebar.caption(f"📄 {RUTA_CSV}\n📏 {file_size} bytes\n🕐 {file_mod}")
+        except Exception as e:
+            st.sidebar.error(f"Error leyendo archivo: {e}")
+            file_signature = None
     else:
         st.sidebar.warning(f"⚠️ {RUTA_CSV} no encontrado")
         inicializar_archivo(RUTA_CSV, ["Fecha","Tipo_Sorteo","Centena","Fijo","Primer_Corrido","Segundo_Corrido"])
+        st.info(f"✅ Archivo creado. Agrega tu primer sorteo.")
         st.stop()
     
     df_full = pd.DataFrame()
@@ -1056,26 +1035,109 @@ def main():
                     else: st.error("⚠️ Vacío")
                 except Exception as err: st.error(f"❌ Error: {err}")
 
+    # === SIDEBAR: ÚLTIMOS RESULTADOS (FORMATO ORIGINAL RESTAURADO) ===
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 Últimos Resultados")
     
+    fecha_ref_default = pd.Timestamp.now().normalize()
+    target_sesion_default = "Tarde"
+    info_ultimo_sorteo = None
+    
     if not df_full.empty:
+        sort_order_map = {'T': 0, 'N': 1}
         df_sort = df_full[df_full['Posicion'] == 'Fijo'].copy()
         if not df_sort.empty:
-            for tipo, label, icon in [('T', 'Tarde', '☀️'), ('N', 'Noche', '🌙')]:
+            df_sort['order_val'] = df_sort['Tipo_Sorteo'].map(sort_order_map)
+            df_fijos_sorted = df_sort.sort_values(by=['Fecha', 'order_val'], ascending=[True, True])
+            ultimo_registro = df_fijos_sorted.iloc[-1]
+            
+            u_fecha = ultimo_registro['Fecha'].date()
+            u_tipo = ultimo_registro['Tipo_Sorteo']
+            
+            ultimos = {}
+            for tipo, label in [('T', 'Tarde'), ('N', 'Noche')]:
                 df_tipo = df_full[df_full['Tipo_Sorteo'] == tipo]
                 if not df_tipo.empty:
-                    row = df_tipo[df_tipo['Fecha'] == df_tipo['Fecha'].max()].iloc[0]
-                    st.sidebar.markdown(f"**{icon} {label}**")
+                    last_row = df_tipo[df_tipo['Fecha'] == df_tipo['Fecha'].max()].iloc[0]
+                    ultimos[tipo] = last_row
+            
+            iconos = {'T': '☀️', 'N': '🌙'}
+            
+            for tipo in ['T', 'N']:
+                if tipo in ultimos:
+                    row = ultimos[tipo]
+                    f_str = row['Fecha'].strftime('%d/%m/%Y')
+                    st.sidebar.markdown(f"**{iconos[tipo]} {row['Tipo_Sorteo']} ({f_str})**")
+                    
                     mask = (df_full['Fecha'] == row['Fecha']) & (df_full['Tipo_Sorteo'] == tipo)
                     try:
-                        val_f = df_full.loc[mask & (df_full['Posicion'] == 'Fijo'), 'Numero'].iloc[0]
-                        val_c = df_full.loc[mask & (df_full['Posicion'] == 'Centena'), 'Numero'].iloc[0] if (mask & (df_full['Posicion'] == 'Centena')).any() else 0
-                        st.sidebar.markdown(f"Num: **{int(f'{val_c}{val_f:02d}')}**")
-                    except: pass
+                        m_c = mask & (df_full['Posicion'] == 'Centena')
+                        m_f = mask & (df_full['Posicion'] == 'Fijo')
+                        m_1 = mask & (df_full['Posicion'] == '1er Corrido')
+                        m_2 = mask & (df_full['Posicion'] == '2do Corrido')
+                        
+                        val_c = df_full.loc[m_c, 'Numero'].iloc[0] if m_c.any() else 0
+                        val_f = df_full.loc[m_f, 'Numero'].iloc[0] if m_f.any() else 0
+                        val_1 = df_full.loc[m_1, 'Numero'].iloc[0] if m_1.any() else 0
+                        val_2 = df_full.loc[m_2, 'Numero'].iloc[0] if m_2.any() else 0
+                        
+                        num_completo = int(f"{val_c}{val_f:02d}")
+                        
+                        st.sidebar.markdown(f"Num: **{num_completo}**")
+                        st.sidebar.markdown(f"C1: `{val_1}` | C2: `{val_2}`")
+                    except:
+                        st.sidebar.markdown("Error datos")
+                    
                     st.sidebar.markdown("---")
+            
+            fecha_ref_default = ultimo_registro['Fecha']
+            target_sesion_default = {'T': 'Tarde', 'N': 'Noche'}[u_tipo]
+            
+            if u_tipo == 'T':
+                fecha_ref_default = u_fecha
+                target_sesion_default = "Noche"
+            elif u_tipo == 'N':
+                fecha_ref_default = u_fecha + timedelta(days=1)
+                target_sesion_default = "Tarde"
+                
+            info_ultimo_sorteo = {'fecha': ultimo_registro['Fecha'], 'tipo': u_tipo}
+
+    else:
+        st.sidebar.warning("No hay datos.")
+
+    st.sidebar.markdown("### 🎯 Configuración de Análisis")
+    modo_sorteo = st.sidebar.radio("Análisis:", ["General", "Tarde", "Noche"])
+    modo_fecha = st.sidebar.radio("Fecha Ref:", ["Auto (Último Dato)", "Personalizado"])
     
-    # === TABLA DE PERSONALIDAD ===
+    fecha_ref = pd.to_datetime(fecha_ref_default)
+    target_sesion = target_sesion_default
+    
+    if modo_fecha == "Personalizado":
+        fecha_ref = st.sidebar.date_input("Fecha:", datetime.now().date())
+        fecha_ref = pd.to_datetime(fecha_ref)
+        sesion_estado = st.sidebar.radio("Estado:", ["Antes de Tarde", "Después de Tarde"], horizontal=False)
+        if sesion_estado == "Antes de Tarde": target_sesion = "Tarde"
+        else: target_sesion = "Noche"
+
+    if st.sidebar.button("🔄 Recargar"): 
+        st.cache_data.clear()
+        st.session_state.rerun_counter = 0
+        st.rerun()
+    
+    if modo_sorteo == "Tarde": df_analisis = df_full[df_full['Tipo_Sorteo'] == 'T'].copy()
+    elif modo_sorteo == "Noche": df_analisis = df_full[df_full['Tipo_Sorteo'] == 'N'].copy()
+    else: df_analisis = df_full.copy()
+    
+    if df_analisis.empty: st.warning("Sin datos."); st.stop()
+
+    orden_sesiones = {'Tarde': 0, 'Noche': 1}
+    target_val = orden_sesiones[target_sesion]
+    
+    if target_val == 0: 
+        df_backtest = df_analisis[df_analisis['Fecha'] < fecha_ref].copy()
+    else: 
+        df_backtest = df_analisis[(df_analisis['Fecha'] < fecha_ref) | ((df_analisis['Fecha'] == fecha_ref) & (df_analisis['Tipo_Sorteo'] == 'T'))].copy()
+
     mostrar_tabla_personalidad_perfiles(obtener_historial_perfiles_cacheado(df_full, RUTA_CACHE))
     st.markdown("---")
 
@@ -1098,12 +1160,17 @@ def main():
         st.caption(f"✅ {len(df_hist_view)} sorteos únicos (30 más recientes)")
 
     st.markdown("---")
-    fecha_ref = pd.to_datetime(df_full['Fecha'].max()) if not df_full.empty else pd.Timestamp.now()
-    df_oport_dec, df_oport_uni = analizar_oportunidad_por_digito(df_full, fecha_ref)
-    st.header("🎯 Estado de Dígitos")
+    df_oport_dec, df_oport_uni = analizar_oportunidad_por_digito(df_backtest, fecha_ref)
+    st.header(f"🎯 Estado de Dígitos ({target_sesion} {fecha_ref.strftime('%d/%m')})")
+    
+    if info_ultimo_sorteo:
+        tipo_nombre = {'T': 'Tarde', 'N': 'Noche'}[info_ultimo_sorteo['tipo']]
+        fecha_txt = info_ultimo_sorteo['fecha'].strftime('%d/%m/%Y')
+        st.caption(f"✅ Cálculo basado en datos hasta: **{tipo_nombre} {fecha_txt}**.")
+    
     col1, col2 = st.columns(2)
-    with col1: st.subheader("🔟 Decenas"); st.dataframe(df_oport_dec, hide_index=True, use_container_width=True)
-    with col2: st.subheader("1️⃣ Unidades"); st.dataframe(df_oport_uni, hide_index=True, use_container_width=True)
+    with col1: st.subheader("🔟 Decenas"); st.dataframe(df_oport_dec.sort_values('Punt. Base', ascending=False), hide_index=True, use_container_width=True)
+    with col2: st.subheader("1️⃣ Unidades"); st.dataframe(df_oport_uni.sort_values('Punt. Base', ascending=False), hide_index=True, use_container_width=True)
 
     st.markdown("---")
     st.header("📅 Análisis de Perfiles (Motor Mejorado)")
@@ -1113,10 +1180,9 @@ def main():
             if not df_historial_perfiles_full.empty:
                 distribuciones_cache = pre_calcular_distribuciones_perfiles(df_historial_perfiles_full)
                 df_stats, transizioni, ultimo_perfil = analizar_estadisticas_perfiles(df_historial_perfiles_full, fecha_ref, distribuciones_cache=distribuciones_cache)
-                estabilidad_digitos = calcular_estabilidad_historica_digitos(df_full)
+                estabilidad_digitos = calcular_estabilidad_historica_digitos(df_backtest)
                 generar_sugerencia_fusionada(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles_full, fecha_ref, estabilidad_digitos)
                 
-                # === TABLA COMPLETA DE ESTADÍSTICAS DE PERFILES (RESTAURADA) ===
                 st.markdown("---")
                 st.subheader("📊 Estadística de Perfiles (Completa)")
                 cols_tabla = ['Perfil', 'Frecuencia', 'Veces Normal', 'Veces Vencido', 'Veces Muy Vencido', 
