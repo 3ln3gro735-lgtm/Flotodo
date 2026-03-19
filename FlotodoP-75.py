@@ -40,8 +40,6 @@ if 'last_rerun_time' not in st.session_state:
     st.session_state.last_rerun_time = 0
 if 'perfil_distribuciones_cache' not in st.session_state:
     st.session_state.perfil_distribuciones_cache = {}
-if 'prediccion_guardada' not in st.session_state:
-    st.session_state.prediccion_guardada = False
 
 # --- CONTROL DE RERUN ---
 current_time = time.time()
@@ -130,11 +128,17 @@ def cargar_datos_flotodo(_ruta_csv, _file_signature):
             return pd.DataFrame(columns=["Fecha","Tipo_Sorteo","Centena","Fijo","Primer_Corrido","Segundo_Corrido"]), None
         
         try:
-            df = pd.read_csv(_ruta_csv, sep=';', encoding='latin-1', header=0, 
+            with open(_ruta_csv, 'r', encoding='latin-1') as f:
+                primera_linea = f.readline()
+            
+            separador = ';' if ';' in primera_linea else (',' if ',' in primera_linea else '\t')
+            
+            df = pd.read_csv(_ruta_csv, sep=separador, encoding='latin-1', header=0, 
                            on_bad_lines='skip', dtype=str, skipinitialspace=True)
         except pd.errors.EmptyDataError:
             return pd.DataFrame(), None
         except Exception as e:
+            st.error(f"❌ Error al leer CSV: {e}")
             return pd.DataFrame(), None
 
         if df.empty: 
@@ -224,6 +228,7 @@ def cargar_datos_flotodo(_ruta_csv, _file_signature):
         return df_historial, invalid_dates_df
         
     except Exception as e:
+        st.error(f"❌ Error cargando datos: {e}")
         return pd.DataFrame(), None
 
 def calcular_estado_actual(gap, limite_dinamico):
@@ -873,9 +878,8 @@ def generar_sugerencia_fusionada(df_stats, transizioni, ultimo_perfil, df_oport_
             """, unsafe_allow_html=True)
         except: continue
 
-# === GUARDAR PREDICCIONES - VERSIÓN CORREGIDA ===
+# === GUARDAR PREDICCIONES ===
 def guardar_prediccion_en_historico(fecha, sorteo, top30, perfil_top, score_promedio, numero_real=None):
-    """Guarda predicción en CSV con TODAS las columnas necesarias"""
     archivo = RUTA_HISTORICO
     
     if numero_real is not None:
@@ -898,25 +902,19 @@ def guardar_prediccion_en_historico(fecha, sorteo, top30, perfil_top, score_prom
     try:
         with open(archivo, 'a', encoding='utf-8', newline='') as f:
             if not existe:
-                # Header con TODAS las columnas necesarias para el dashboard
                 f.write('Fecha,Sorteo,Top30,Perfil_Top,Score_Promedio,Numero_Real,Acierto,Posicion\n')
             
-            # Escribir registro con comillas para evitar problemas con listas
             linea = f'{fecha_str},{sorteo_nombre},"{top30}",{perfil_top},{score_promedio},{numero_real if numero_real else "PENDIENTE"},{acierto},{posicion}\n'
             f.write(linea)
             f.flush()
         
-        st.success(f"✅ Guardado: {fecha_str} {sorteo_nombre}")
-        if os.path.exists(archivo):
-            st.info(f"📏 Tamaño: {os.path.getsize(archivo)} bytes")
         return True
     except Exception as e:
         st.error(f"❌ Error: {e}")
         return False
 
-# === LEER HISTÓRICO - VERSIÓN CORREGIDA ===
+# === LEER HISTÓRICO ===
 def leer_historico_predicciones():
-    """Lee el histórico y muestra columnas disponibles"""
     if not os.path.exists(RUTA_HISTORICO):
         return pd.DataFrame()
     
@@ -929,7 +927,6 @@ def leer_historico_predicciones():
         
         df = pd.read_csv(RUTA_HISTORICO, encoding='utf-8')
         
-        # Mostrar columnas disponibles
         if not df.empty:
             st.write(f"**📋 Columnas disponibles:** {list(df.columns)}")
         
@@ -938,9 +935,8 @@ def leer_historico_predicciones():
         st.error(f"❌ Error al leer: {e}")
         return pd.DataFrame()
 
-# === ACTUALIZAR RESULTADOS - VERSIÓN CORREGIDA ===
+# === ACTUALIZAR RESULTADOS ===
 def actualizar_resultados_pendientes(numero_real, fecha, sorteo):
-    """Actualiza predicciones pendientes"""
     if not os.path.exists(RUTA_HISTORICO):
         return 0
     
@@ -956,19 +952,11 @@ def actualizar_resultados_pendientes(numero_real, fecha, sorteo):
         else:
             fecha_str = str(fecha)[:10]
         
-        st.info(f"🔍 Buscando: Fecha={fecha_str}, Sorteo={sorteo_nombre}")
-        st.info(f"📊 Filas en archivo: {len(df)}")
-        if not df.empty:
-            st.write("**📋 Primeras filas:**")
-            st.dataframe(df.head(3), hide_index=True)
-        
         mask_pendiente = (
             (df['Fecha'].astype(str).str[:10] == fecha_str) & 
             (df['Sorteo'].astype(str) == sorteo_nombre) & 
             (df['Acierto'].astype(str) == 'PENDIENTE')
         )
-        
-        st.info(f"📊 Coincidencias pendientes: {mask_pendiente.sum()}")
         
         if mask_pendiente.any():
             actualizados = 0
@@ -983,7 +971,7 @@ def actualizar_resultados_pendientes(numero_real, fecha, sorteo):
                     df.loc[idx, 'Posicion'] = str(top30.index(numero_real) + 1) if estuvo_en_top30 else 'N/A'
                     actualizados += 1
                 except Exception as e:
-                    st.error(f"Error actualizando: {e}")
+                    pass
             
             with open(RUTA_HISTORICO, 'w', encoding='utf-8', newline='') as f:
                 f.write('Fecha,Sorteo,Top30,Perfil_Top,Score_Promedio,Numero_Real,Acierto,Posicion\n')
@@ -997,9 +985,8 @@ def actualizar_resultados_pendientes(numero_real, fecha, sorteo):
     
     return 0
 
-# === DASHBOARD DE EFECTIVIDAD - VERSIÓN CORREGIDA ===
+# === DASHBOARD DE EFECTIVIDAD - VERSIÓN QUE SÍ FUNCIONA ===
 def mostrar_dashboard_efectividad():
-    """Muestra dashboard con TODAS las estadísticas"""
     st.header("📊 Dashboard de Efectividad")
     st.markdown("Análisis automático de predicciones anteriores.")
     
@@ -1024,15 +1011,12 @@ def mostrar_dashboard_efectividad():
         st.info("ℹ️ No hay predicciones guardadas aún. Ejecuta análisis primero.")
         return
     
-    # Filtrar solo predicciones con resultado
     df_completas = df[df['Acierto'] != 'PENDIENTE'].copy()
     
     if len(df_completas) == 0:
         st.warning("⚠️ Aún no hay predicciones con resultado. Agrega el sorteo real después de generar una predicción.")
-        st.info("💡 **Pasos:** 1) 🚀 Ejecutar Análisis → 2) 📝 Agregar sorteo real → 3) 💾 Guardar")
         return
     
-    # === ESTADÍSTICAS GENERALES ===
     col1, col2, col3 = st.columns(3)
     total = len(df_completas)
     aciertos = len(df_completas[df_completas['Acierto'] == '✅'])
@@ -1044,7 +1028,6 @@ def mostrar_dashboard_efectividad():
     
     st.markdown("---")
     
-    # === EFECTIVIDAD POR PERFIL ===
     st.subheader("📈 Efectividad por Perfil")
     if 'Perfil_Top' in df_completas.columns and df_completas['Perfil_Top'].notna().any():
         perfil_stats = df_completas.groupby('Perfil_Top').apply(
@@ -1061,128 +1044,70 @@ def mostrar_dashboard_efectividad():
             for _, row in perfil_stats.iterrows():
                 color = "🟢" if row['Efectividad'] >= 40 else ("🟡" if row['Efectividad'] >= 25 else "🔴")
                 st.markdown(f"{color} **{row['Perfil_Top']}**: {row['Efectividad']}% ({row['Aciertos']} de {row['Total']})")
-            
-            st.markdown("---")
-            mejor = perfil_stats.iloc[0]
-            peor = perfil_stats.iloc[-1]
-            if mejor['Efectividad'] > 30:
-                st.info(f"💡 **Mejor perfil:** '{mejor['Perfil_Top']}' con {mejor['Efectividad']}%")
-            if peor['Efectividad'] < 25 and peor['Total'] >= 2:
-                st.warning(f"⚠️ **Perfil a revisar:** '{peor['Perfil_Top']}' con {peor['Efectividad']}%")
-        else:
-            st.info("ℹ️ No hay datos suficientes por perfil aún")
-    else:
-        st.info("ℹ️ Columna 'Perfil_Top' no disponible o vacía")
     
     st.markdown("---")
     
-    # === EFECTIVIDAD POR RANGO DE SCORE ===
+    # === CORREGIDO DEFINITIVAMENTE ===
     st.subheader("📈 Efectividad por Rango de Score")
     if 'Score_Promedio' in df_completas.columns and df_completas['Score_Promedio'].notna().any():
-        # Crear rangos de score
-        df_completas_copy = df_completas.copy()
-        df_completas_copy['Rango_Score'] = pd.cut(
-            df_completas_copy['Score_Promedio'], 
-            bins=[0, 150, 200, 250, 999], 
-            labels=['<150', '150-200', '200-250', '>250']
-        )
+        # ← CREAR DICCIONARIO PRIMERO, NO USAR DATFRAME CON GROUPBY
+        score_dict = {}
         
-        score_stats = df_completas_copy.groupby('Rango_Score', observed=True).apply(
-            lambda x: pd.Series({
-                'Total': len(x),
-                'Aciertos': len(x[x['Acierto'] == '✅']),
-                'Efectividad': round(len(x[x['Acierto'] == '✅']) / len(x) * 100, 1) if len(x) > 0 else 0
-            })
-        ).reset_index()
-        
-        if not score_stats.empty:
-            for _, row in score_stats.iterrows():
-                if pd.notna(row['Rango_Score']):
-                    color = "🟢" if row['Efectividad'] >= 40 else ("🟡" if row['Efectividad'] >= 25 else "🔴")
-                    st.markdown(f"{color} **Score {row['Rango_Score']}**: {row['Efectividad']}% ({row['Aciertos']} de {row['Total']})")
-        else:
-            st.info("ℹ️ No hay datos suficientes por score aún")
-    else:
-        st.info("ℹ️ Columna 'Score_Promedio' no disponible o vacía")
-    
-    st.markdown("---")
-    
-    # === NÚMEROS QUE MÁS FALLAMOS ===
-    st.subheader("🔍 Números que Más Fallamos")
-    if 'Numero_Real' in df_completas.columns and 'Top30' in df_completas.columns:
-        fallos = df_completas[df_completas['Acierto'] == '❌'].copy()
-        if len(fallos) > 0:
-            numeros_fallados = []
-            for _, row in fallos.iterrows():
-                try:
-                    top30_str = str(row['Top30']).strip('[]').strip('"')
-                    top30 = [int(x.strip()) for x in top30_str.split(',') if x.strip()]
-                    numeros_fallados.extend(top30)
-                except:
-                    pass
-            
-            if numeros_fallados:
-                counter = Counter(numeros_fallados)
-                mas_fallados = counter.most_common(5)
-                
-                for num, count in mas_fallados:
-                    st.markdown(f"❌ **{num:02d}**: Predicado {count} veces en fallos")
+        for label in ['<150', '150-200', '200-250', '>250']:
+            if label == '<150':
+                mask = df_completas['Score_Promedio'] < 150
+            elif label == '150-200':
+                mask = (df_completas['Score_Promedio'] >= 150) & (df_completas['Score_Promedio'] < 200)
+            elif label == '200-250':
+                mask = (df_completas['Score_Promedio'] >= 200) & (df_completas['Score_Promedio'] < 250)
             else:
-                st.info("ℹ️ No se pudieron analizar los números fallados")
-        else:
-            st.info("✅ ¡No tienes fallos registrados aún!")
-    
-    st.markdown("---")
-    
-    # === TENDENCIA DE ACIERTOS ===
-    st.subheader("📊 Tendencia de Aciertos")
-    if 'Fecha' in df_completas.columns and len(df_completas) >= 3:
-        df_completas_copy = df_completas.copy()
-        df_completas_copy['Fecha'] = pd.to_datetime(df_completas_copy['Fecha'], errors='coerce')
-        df_completas_copy = df_completas_copy.dropna(subset=['Fecha']).sort_values('Fecha')
+                mask = df_completas['Score_Promedio'] >= 250
+            
+            total_en_rango = len(df_completas[mask])
+            aciertos_en_rango = len(df_completas[mask & (df_completas['Acierto'] == '✅')])
+            efectividad_en_rango = round(aciertos_en_rango / total_en_rango * 100, 1) if total_en_rango > 0 else 0
+            
+            score_dict[label] = {
+                'Total': total_en_rango,
+                'Aciertos': aciertos_en_rango,
+                'Efectividad': efectividad_en_rango
+            }
         
-        if len(df_completas_copy) >= 3:
-            df_completas_copy['Acierto_Num'] = (df_completas_copy['Acierto'] == '✅').astype(int)
-            df_completas_copy['Acumulado'] = df_completas_copy['Acierto_Num'].cumsum()
-            df_completas_copy['Efectividad_Acumulada'] = (df_completas_copy['Acumulado'] / (df_completas_copy.index + 1) * 100)
-            
-            st.line_chart(df_completas_copy.set_index('Fecha')['Efectividad_Acumulada'])
-            
-            recientes = df_completas_copy.tail(5)
-            if len(recientes) > 0:
-                efectividad_reciente = len(recientes[recientes['Acierto'] == '✅']) / len(recientes) * 100
-                if efectividad_reciente > efectividad:
-                    st.success(f"📈 Tendencia reciente: {efectividad_reciente:.1f}% (mejorando)")
-                elif efectividad_reciente < efectividad:
-                    st.warning(f"📉 Tendencia reciente: {efectividad_reciente:.1f}% (empeorando)")
-                else:
-                    st.info(f"➡️ Tendencia reciente: {efectividad_reciente:.1f}% (estable)")
+        # ← MOSTRAR RESULTADOS DIRECTAMENTE
+        for label, datos in score_dict.items():
+            if datos['Total'] > 0:
+                color = "🟢" if datos['Efectividad'] >= 40 else ("🟡" if datos['Efectividad'] >= 25 else "🔴")
+                st.markdown(f"{color} **Score {label}**: {datos['Efectividad']}% ({datos['Aciertos']} de {datos['Total']})")
     
     with st.expander("📋 Ver Histórico Completo"):
         st.dataframe(df.sort_values('Fecha', ascending=False).head(50), hide_index=True, use_container_width=True)
 
-# ... [Resto del código igual: ejecutar_backtest, mostrar_tabla_personalidad_perfiles, main] ...
-# (El resto del código main() se mantiene igual que en la versión anterior)
-
-def ejecutar_backtest(df_full, sorteos_objetivo, debug_mode=False):
-    if df_full.empty: return pd.DataFrame(), 0, 0, []
+# === BACKTEST CORREGIDO - RESPETA SESIÓN SELECCIONADA ===
+def ejecutar_backtest(df_backtest_data, sorteos_objetivo, nombre_sesion, debug_mode=False):
+    if df_backtest_data.empty: 
+        st.warning(f"⚠️ No hay datos para backtest de {nombre_sesion}")
+        return pd.DataFrame(), 0, 0, []
     
-    df_fijos = df_full[df_full['Posicion'] == 'Fijo'].copy()
-    if df_fijos.empty: return pd.DataFrame(), 0, 0, []
+    df_fijos = df_backtest_data[df_backtest_data['Posicion'] == 'Fijo'].copy()
+    if df_fijos.empty: 
+        return pd.DataFrame(), 0, 0, []
     
-    if len(df_fijos) > 1000: df_fijos = df_fijos.tail(1000).reset_index(drop=True)
+    if len(df_fijos) > 1000: 
+        df_fijos = df_fijos.tail(1000).reset_index(drop=True)
+    
     df_fijos['sort_val'] = df_fijos['Tipo_Sorteo'].map({'T': 0, 'N': 1})
     df_fijos = df_fijos.sort_values(by=['Fecha', 'sort_val'], ascending=[False, False]).reset_index(drop=True)
     
     sorteos_a_procesar = min(sorteos_objetivo, len(df_fijos))
-    if sorteos_a_procesar < 1: return pd.DataFrame(), 0, 0, []
+    if sorteos_a_procesar < 1: 
+        return pd.DataFrame(), 0, 0, []
     
     resultados, aciertos, total_sorteos = [], 0, 0
     debug_logs = [] if debug_mode else []
     
-    df_cache_full = obtener_historial_perfiles_cacheado(df_full)
+    df_cache_full = obtener_historial_perfiles_cacheado(df_backtest_data)
     distribuciones_cache = pre_calcular_distribuciones_perfiles(df_cache_full) if not df_cache_full.empty else {}
-    estabilidad_digitos_global = calcular_estabilidad_historica_digitos(df_full)
+    estabilidad_digitos_global = calcular_estabilidad_historica_digitos(df_backtest_data)
     
     progress_bar = st.progress(0)
     start_time = time.time()
@@ -1193,8 +1118,9 @@ def ejecutar_backtest(df_full, sorteos_objetivo, debug_mode=False):
         resultado_real = int(sorteo_actual['Numero'])
         total_sorteos += 1
         
-        df_historial = df_full[df_full['Fecha'] < fecha_ref].copy()
-        if len(df_historial) > 1000: df_historial = df_historial.tail(1000)
+        df_historial = df_backtest_data[df_backtest_data['Fecha'] < fecha_ref].copy()
+        if len(df_historial) > 1000: 
+            df_historial = df_historial.tail(1000)
         
         if df_historial.empty:
             resultados.append({'Fecha': fecha_ref.strftime('%d/%m/%Y'), 'Sorteo': tipo_sorteo, 'Real': f"{resultado_real:02d}", 'En Top30': '⚠️'})
@@ -1212,12 +1138,23 @@ def ejecutar_backtest(df_full, sorteos_objetivo, debug_mode=False):
         prediccion = obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles, fecha_ref, estabilidad_digitos_global)
         
         es_acierto = numero_en_lista(resultado_real, prediccion)
-        if es_acierto: aciertos += 1
+        if es_acierto: 
+            aciertos += 1
         
         if debug_mode:
-            debug_logs.append({'Fecha': fecha_ref.strftime('%d/%m/%Y'), 'Sorteo': tipo_sorteo, 'Real': resultado_real, 'En Top30': '✅' if es_acierto else '❌'})
+            debug_logs.append({
+                'Fecha': fecha_ref.strftime('%d/%m/%Y'),
+                'Sorteo': tipo_sorteo,
+                'Real': resultado_real,
+                'En Top30': '✅' if es_acierto else '❌'
+            })
         
-        resultados.append({'Fecha': fecha_ref.strftime('%d/%m/%Y'), 'Sorteo': tipo_sorteo, 'Real': f"{resultado_real:02d}", 'En Top30': '✅' if es_acierto else '❌'})
+        resultados.append({
+            'Fecha': fecha_ref.strftime('%d/%m/%Y'), 
+            'Sorteo': tipo_sorteo,
+            'Real': f"{resultado_real:02d}", 
+            'En Top30': '✅' if es_acierto else '❌'
+        })
         
         elapsed = time.time() - start_time
         progress_bar.progress((i + 1) / sorteos_a_procesar)
@@ -1232,10 +1169,11 @@ def ejecutar_backtest(df_full, sorteos_objetivo, debug_mode=False):
 def mostrar_tabla_personalidad_perfiles(df_historial_perfiles):
     st.header("📊 Comportamiento Histórico de Perfiles")
     if df_historial_perfiles.empty:
-        st.info("ℹ️ No hay datos.")
+        st.info("ℹ️ No hay datos suficientes.")
         return
     
     distribuciones = pre_calcular_distribuciones_perfiles(df_historial_perfiles)
+    
     if not distribuciones:
         st.info("ℹ️ No hay perfiles.")
         return
@@ -1244,12 +1182,20 @@ def mostrar_tabla_personalidad_perfiles(df_historial_perfiles):
     for perfil, dist in distribuciones.items():
         estado_comun = dist.get('Estado_Comun', 'Ninguno')
         recomendacion = "✅ Jugar en " + estado_comun if estado_comun in ['Normal', 'Vencido', 'Muy Vencido'] else "⚠️ Sin patrón"
-        filas_tabla.append({'Perfil': perfil, 'Normal': f"{dist.get('Normal', 0):.1f}%", 'Vencido': f"{dist.get('Vencido', 0):.1f}%", 'Muy Vencido': f"{dist.get('Muy Vencido', 0):.1f}%", 'Estado Común': estado_comun, 'Recomendación': recomendacion})
+        filas_tabla.append({
+            'Perfil': perfil,
+            'Normal': f"{dist.get('Normal', 0):.1f}%",
+            'Vencido': f"{dist.get('Vencido', 0):.1f}%",
+            'Muy Vencido': f"{dist.get('Muy Vencido', 0):.1f}%",
+            'Estado Común': estado_comun,
+            'Recomendación': recomendacion
+        })
     
-    st.dataframe(pd.DataFrame(filas_tabla), hide_index=True, use_container_width=True)
-    st.caption(f"📊 {len(filas_tabla)} perfiles")
+    df_tabla = pd.DataFrame(filas_tabla)
+    st.dataframe(df_tabla, hide_index=True, use_container_width=True)
+    st.caption(f"📊 {len(filas_tabla)} perfiles | últimos 1000 sorteos")
 
-# --- MAIN (mantenido igual, solo agregando el llamado al dashboard) ---
+# --- MAIN ---
 def main():
     st.sidebar.header("⚙️ Panel de Control")
     
@@ -1350,7 +1296,7 @@ def main():
                         st.error("⚠️ Vacío")
                 except Exception as err: st.error(f"❌ Error: {err}")
 
-    # === SIDEBAR: ÚLTIMOS RESULTADOS ===
+    # === SIDEBAR: ÚLTIMOS RESULTADOS (FORMATO ORIGINAL) ===
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 Últimos Resultados")
     
@@ -1386,19 +1332,11 @@ def main():
                     
                     mask = (df_full['Fecha'] == row['Fecha']) & (df_full['Tipo_Sorteo'] == tipo)
                     try:
-                        m_c = mask & (df_full['Posicion'] == 'Centena')
-                        m_f = mask & (df_full['Posicion'] == 'Fijo')
-                        m_1 = mask & (df_full['Posicion'] == '1er Corrido')
-                        m_2 = mask & (df_full['Posicion'] == '2do Corrido')
-                        
-                        val_c = df_full.loc[m_c, 'Numero'].iloc[0] if m_c.any() else 0
-                        val_f = df_full.loc[m_f, 'Numero'].iloc[0] if m_f.any() else 0
-                        val_1 = df_full.loc[m_1, 'Numero'].iloc[0] if m_1.any() else 0
-                        val_2 = df_full.loc[m_2, 'Numero'].iloc[0] if m_2.any() else 0
-                        
-                        num_completo = int(f"{val_c}{val_f:02d}")
-                        
-                        st.sidebar.markdown(f"Num: **{num_completo}**")
+                        val_c = df_full.loc[mask & (df_full['Posicion'] == 'Centena'), 'Numero'].iloc[0] if (mask & (df_full['Posicion'] == 'Centena')).any() else 0
+                        val_f = df_full.loc[mask & (df_full['Posicion'] == 'Fijo'), 'Numero'].iloc[0] if (mask & (df_full['Posicion'] == 'Fijo')).any() else 0
+                        val_1 = df_full.loc[mask & (df_full['Posicion'] == '1er Corrido'), 'Numero'].iloc[0] if (mask & (df_full['Posicion'] == '1er Corrido')).any() else 0
+                        val_2 = df_full.loc[mask & (df_full['Posicion'] == '2do Corrido'), 'Numero'].iloc[0] if (mask & (df_full['Posicion'] == '2do Corrido')).any() else 0
+                        st.sidebar.markdown(f"Num: **{int(f'{val_c}{val_f:02d}')}**")
                         st.sidebar.markdown(f"C1: `{val_1}` | C2: `{val_2}`")
                     except:
                         st.sidebar.markdown("Error datos")
@@ -1439,11 +1377,23 @@ def main():
         st.session_state.rerun_counter = 0
         st.rerun()
     
-    if modo_sorteo == "Tarde": df_analisis = df_full[df_full['Tipo_Sorteo'] == 'T'].copy()
-    elif modo_sorteo == "Noche": df_analisis = df_full[df_full['Tipo_Sorteo'] == 'N'].copy()
-    else: df_analisis = df_full.copy()
+    # === FILTRAR POR SESIÓN SELECCIONADA ===
+    if modo_sorteo == "Tarde": 
+        df_analisis = df_full[df_full['Tipo_Sorteo'] == 'T'].copy()
+        nombre_sesion_backtest = "Tarde"
+    elif modo_sorteo == "Noche": 
+        df_analisis = df_full[df_full['Tipo_Sorteo'] == 'N'].copy()
+        nombre_sesion_backtest = "Noche"
+    else: 
+        df_analisis = df_full.copy()
+        nombre_sesion_backtest = "General (Todas)"
     
-    if df_analisis.empty: st.warning("Sin datos."); st.stop()
+    if df_analisis.empty and modo_sorteo != "General":
+        st.warning(f"⚠️ No hay datos para {modo_sorteo}. Cambia a 'General' o agrega sorteos.")
+    
+    if df_full.empty:
+        st.warning("⚠️ No hay datos en el archivo CSV.")
+        st.stop()
 
     orden_sesiones = {'Tarde': 0, 'Noche': 1}
     target_val = orden_sesiones[target_sesion]
@@ -1453,7 +1403,6 @@ def main():
     else: 
         df_backtest = df_analisis[(df_analisis['Fecha'] < fecha_ref) | ((df_analisis['Fecha'] == fecha_ref) & (df_analisis['Tipo_Sorteo'] == 'T'))].copy()
 
-    # === DASHBOARD DE EFECTIVIDAD ===
     mostrar_dashboard_efectividad()
     st.markdown("---")
 
@@ -1528,9 +1477,7 @@ def main():
                         perfil_top = df_stats.iloc[0]['Perfil'] if not df_stats.empty else 'N/A'
                         guardado = guardar_prediccion_en_historico(fecha_ref, target_sesion, top30, perfil_top, score_prom)
                         if guardado:
-                            st.success("📝 Predicción guardada - Recargando...")
-                            time.sleep(0.5)
-                            st.rerun()
+                            st.success("📝 Predicción guardada")
                     
                     st.markdown("---")
                     st.subheader("📊 Estadística de Perfiles (Completa)")
@@ -1540,45 +1487,34 @@ def main():
 
     st.markdown("---")
     st.header("🧪 Backtesting (Real)")
-    st.markdown("Simulación usando cálculo real de mediana y P75 para cada fecha histórica.")
-    dias_back = st.slider("Días a simular", 7, 60, 15, key="slider_backtest")
+    st.info(f"📌 **Sesión para backtest:** {nombre_sesion_backtest}")
+    
+    sorteos_back = st.slider("Número de sorteos", 3, 15, 7, key="slider_backtest")
     
     if st.button("▶️ Iniciar Backtest"):
-        if df_full.empty:
-            st.error("❌ No hay datos para realizar el backtest")
+        if df_analisis.empty:
+            st.error(f"❌ No hay datos para backtest de {nombre_sesion_backtest}")
         else:
-            with st.spinner(f"🔄 Simulando {dias_back} días..."):
-                df_res, aciertos, total, debug_logs = ejecutar_backtest(df_full, dias_back * 2, debug_mode=st.session_state.debug_mode)
+            with st.spinner(f"🔄 Backtest para {nombre_sesion_backtest} ({sorteos_back} sorteos)..."):
+                df_res, aciertos, total, debug_logs = ejecutar_backtest(df_analisis, sorteos_back, nombre_sesion_backtest, debug_mode=st.session_state.debug_mode)
                 
-                if debug_logs:
-                    st.session_state.debug_logs = debug_logs
-                
-                st.subheader("📊 Resultados")
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Total Sorteos", total)
-                col2.metric("Aciertos", aciertos)
-                col3.metric("Efectividad", f"{round((aciertos/total)*100, 1) if total > 0 else 0} %")
-                
-                if aciertos > 0:
-                    st.success(f"✨ El modelo acertó en **{aciertos} de {total}** sorteos")
-                else:
-                    st.warning("⚠️ No hubo aciertos. Revisa los parámetros del algoritmo.")
-                
-                if st.session_state.debug_mode and st.session_state.debug_logs:
-                    st.markdown(f"### 🔍 Logging Detallado ({len(st.session_state.debug_logs)} sorteos)")
-                    st.dataframe(pd.DataFrame(st.session_state.debug_logs), hide_index=True, use_container_width=True)
+                if total > 0:
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Sorteos", total)
+                    col2.metric("Aciertos", aciertos)
+                    col3.metric("Efectividad", f"{round((aciertos/total)*100, 1)}%")
                     
-                    aciertos_count = len([log for log in st.session_state.debug_logs if log.get('En Top30') == '✅'])
-                    fallos_count = len([log for log in st.session_state.debug_logs if log.get('En Top30') == '❌'])
+                    if aciertos > 0: 
+                        st.success(f"✨ {aciertos} de {total} aciertos en {nombre_sesion_backtest}")
+                    else: 
+                        st.warning(f"⚠️ 0 aciertos en {nombre_sesion_backtest}")
                     
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("✅ Aciertos", aciertos_count)
-                    with col2:
-                        st.metric("❌ Fallos", fallos_count)
-                
-                with st.expander("Ver detalle"):
-                    st.dataframe(df_res, hide_index=True)
+                    if st.session_state.debug_mode and debug_logs:
+                        st.markdown(f"### 🔍 Logging ({nombre_sesion_backtest})")
+                        st.dataframe(pd.DataFrame(debug_logs), hide_index=True)
+                    
+                    with st.expander("📋 Ver resultados"):
+                        st.dataframe(df_res, hide_index=True)
 
 if __name__ == "__main__":
     main()
