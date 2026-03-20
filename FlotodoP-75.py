@@ -120,7 +120,7 @@ def parse_fecha_safe(fecha_str):
         pass
     return None
 
-@st.cache_data(ttl=None, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def cargar_datos_flotodo(_ruta_csv, _file_signature):
     try:
         if not os.path.exists(_ruta_csv):
@@ -253,7 +253,8 @@ def obtener_df_temperatura(contador):
     return df
 
 def analizar_oportunidad_por_digito(df_historial, fecha_referencia):
-    if df_historial.empty: return pd.DataFrame(), pd.DataFrame()
+    if df_historial.empty: 
+        return pd.DataFrame(), pd.DataFrame(), {}, {}, {}, {}
     
     df_base_fijos = df_historial[df_historial['Posicion'] == 'Fijo'].copy()
     contador_decenas = Counter()
@@ -268,9 +269,14 @@ def analizar_oportunidad_por_digito(df_historial, fecha_referencia):
     mapa_temp_dec = pd.Series(df_temp_dec.Temperatura.values, index=df_temp_dec.Dígito).to_dict()
     mapa_temp_uni = pd.Series(df_temp_uni.Temperatura.values, index=df_temp_uni.Dígito).to_dict()
     
-    df_hist_estado = df_base_fijos[df_base_fijos['Fecha'] < fecha_referencia].copy()
+    df_hist_estado = df_base_fijos[df_base_fijos['Fecha'] <= fecha_referencia].copy()
     
     res_dec, res_uni = [], []
+    gaps_dec = {}
+    gaps_uni = {}
+    freq_dec = {}
+    freq_uni = {}
+    
     for i in range(10):
         fechas_d = df_hist_estado[df_hist_estado['Numero'] // 10 == i]['Fecha'].sort_values()
         gap_d, prom_d = 0, 0
@@ -278,6 +284,9 @@ def analizar_oportunidad_por_digito(df_historial, fecha_referencia):
             gaps = fechas_d.diff().dt.days.dropna()
             prom_d = gaps.median() if len(gaps) > 0 else 0
             gap_d = (fecha_referencia - fechas_d.max()).days
+            gaps_dec[i] = gap_d
+        else:
+            gaps_dec[i] = 999
         ed = calcular_estado_actual(gap_d, prom_d)
         
         fechas_u = df_hist_estado[df_hist_estado['Numero'] % 10 == i]['Fecha'].sort_values()
@@ -286,19 +295,25 @@ def analizar_oportunidad_por_digito(df_historial, fecha_referencia):
             gaps = fechas_u.diff().dt.days.dropna()
             prom_u = gaps.median() if len(gaps) > 0 else 0
             gap_u = (fecha_referencia - fechas_u.max()).days
+            gaps_uni[i] = gap_u
+        else:
+            gaps_uni[i] = 999
         eu = calcular_estado_actual(gap_u, prom_u)
+        
+        freq_dec[i] = contador_decenas.get(i, 0)
+        freq_uni[i] = contador_unidades.get(i, 0)
         
         p_base_d = {'Muy Vencido': 100, 'Vencido': 50, 'Normal': 0}.get(ed, 0)
         p_base_u = {'Muy Vencido': 100, 'Vencido': 50, 'Normal': 0}.get(eu, 0)
         
         res_dec.append({'Dígito': i, 'Temperatura': mapa_temp_dec.get(i, '🟡 Tibio'), 'Estado': ed, 
                        'Punt. Base': p_base_d, 'Última Salida': fechas_d.max().strftime('%d/%m') if not fechas_d.empty else '-',
-                       'Frecuencia': contador_decenas.get(i, 0)})
+                       'Frecuencia': freq_dec[i]})
         res_uni.append({'Dígito': i, 'Temperatura': mapa_temp_uni.get(i, '🟡 Tibio'), 'Estado': eu, 
                        'Punt. Base': p_base_u, 'Última Salida': fechas_u.max().strftime('%d/%m') if not fechas_u.empty else '-',
-                       'Frecuencia': contador_unidades.get(i, 0)})
+                       'Frecuencia': freq_uni[i]})
 
-    return pd.DataFrame(res_dec), pd.DataFrame(res_uni)
+    return pd.DataFrame(res_dec), pd.DataFrame(res_uni), gaps_dec, gaps_uni, freq_dec, freq_uni
 
 def obtener_historial_perfiles_cacheado(df_full, ruta_cache=None):
     if df_full.empty: return pd.DataFrame()
@@ -465,7 +480,7 @@ def pre_calcular_distribuciones_perfiles(df_historial_perfiles):
         df_perfil = df_historial_perfiles[df_historial_perfiles['Perfil'] == perfil].copy()
         
         if df_perfil.empty:
-            distribuciones[perfil] = {'Normal': 33.3, 'Vencido': 33.3, 'Muy Vencido': 33.3, 'Estado_Comun': 'Normal'}
+            distribuciones[perfil] = {'Normal': 33.3, 'Vencido': 33.3, 'Muy Vencido': 33.3, 'Estado_Comun': 'Normal', 'porcentaje': 33.3}
             continue
         
         estados_calculados = []
@@ -507,10 +522,11 @@ def pre_calcular_distribuciones_perfiles(df_historial_perfiles):
                 'Normal': distribucion.get('Normal', 0),
                 'Vencido': distribucion.get('Vencido', 0),
                 'Muy Vencido': distribucion.get('Muy Vencido', 0),
-                'Estado_Comun': estado_comun
+                'Estado_Comun': estado_comun,
+                'porcentaje': distribucion.get(estado_comun, 0)
             }
         else:
-            distribuciones[perfil] = {'Normal': 33.3, 'Vencido': 33.3, 'Muy Vencido': 33.3, 'Estado_Comun': 'Normal'}
+            distribuciones[perfil] = {'Normal': 33.3, 'Vencido': 33.3, 'Muy Vencido': 33.3, 'Estado_Comun': 'Normal', 'porcentaje': 33.3}
     
     return distribuciones
 
@@ -621,7 +637,7 @@ def analizar_estadisticas_perfiles(df_historial_perfiles, fecha_referencia, dist
                 estado_ultima_salida = "Normal"
                 estabilidad_ultima_salida = 100.0
         
-        distribucion_estados = distribuciones_cache.get(perfil, {'Normal': 33.3, 'Vencido': 33.3, 'Muy Vencido': 33.3, 'Estado_Comun': 'Normal'})
+        distribucion_estados = distribuciones_cache.get(perfil, {'Normal': 33.3, 'Vencido': 33.3, 'Muy Vencido': 33.3, 'Estado_Comun': 'Normal', 'porcentaje': 33.3})
         estado_ultima_salida_str = str(estado_ultima_salida)
         porc_ultima_salida = distribucion_estados.get(estado_ultima_salida_str, 33.3)
         
@@ -663,16 +679,20 @@ def analizar_estadisticas_perfiles(df_historial_perfiles, fecha_referencia, dist
     df_stats = pd.DataFrame(analisis_perfiles)
     return df_stats, transiciones, ultimo_perfil_global
 
-def obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles, fecha_ref, estabilidad_digitos, debug_mode=False, debug_logs=None):
-    if df_stats.empty: return []
+def obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles, fecha_ref, estabilidad_digitos, gaps_dec, gaps_uni, distribuciones_perfiles, freq_dec, freq_uni, debug_mode=False, debug_logs=None):
+    if df_stats.empty: 
+        return list(range(10, 50))
     
     map_est_dec = {}
     map_est_uni = {}
+    
     if not estabilidad_digitos.empty:
         dec_df = estabilidad_digitos[estabilidad_digitos['Tipo']=='Decena']
         uni_df = estabilidad_digitos[estabilidad_digitos['Tipo']=='Unidad']
-        if not dec_df.empty: map_est_dec = dec_df.set_index('Digito')['EstabilidadHist'].to_dict()
-        if not uni_df.empty: map_est_uni = uni_df.set_index('Digito')['EstabilidadHist'].to_dict()
+        if not dec_df.empty: 
+            map_est_dec = dec_df.set_index('Digito')['EstabilidadHist'].to_dict()
+        if not uni_df.empty: 
+            map_est_uni = uni_df.set_index('Digito')['EstabilidadHist'].to_dict()
     
     scores = []
     for _, row in df_stats.iterrows():
@@ -696,7 +716,8 @@ def obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_op
         scores.append({'Perfil': p, 'Score': int(score), 'Estado': estado})
     
     df_scores = pd.DataFrame(scores).sort_values('Score', ascending=False)
-    top_3 = df_scores.head(3)
+    
+    top_7 = df_scores.head(7)
     
     map_estado_dec = df_oport_dec.set_index('Dígito')['Estado'].to_dict() if not df_oport_dec.empty else {}
     map_estado_uni = df_oport_uni.set_index('Dígito')['Estado'].to_dict() if not df_oport_uni.empty else {}
@@ -710,30 +731,108 @@ def obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_op
     map_temp_uni = df_oport_uni.set_index('Dígito')['Temperatura'].to_dict() if not df_oport_uni.empty else {}
     temp_val = {'🔥 Caliente': 3, '🟡 Tibio': 2, '🧊 Frío': 1}
     
-    for _, row in top_3.iterrows():
+    for _, row in top_7.iterrows():
         perfil = str(row['Perfil'])
         partes = perfil.split('-')
-        if len(partes) != 2: continue
+        if len(partes) != 2: 
+            continue
         ed_req, eu_req = partes[0], partes[1]
+        
         decenas_estado = [d for d in range(10) if map_estado_dec.get(d) == ed_req]
         unidades_estado = [u for u in range(10) if map_estado_uni.get(u) == eu_req]
+        
+        if not decenas_estado:
+            decenas_estado = list(range(10))
+        if not unidades_estado:
+            unidades_estado = list(range(10))
+        
+        total_combinaciones = len(decenas_estado) * len(unidades_estado)
+        porc_perfil = distribuciones_perfiles.get(perfil, {}).get('porcentaje', 0)
         
         for d in decenas_estado:
             for u in unidades_estado:
                 num = int(f"{d}{u}")
                 last_seen = df_hist_nums.get(num, pd.Timestamp('2000-01-01'))
                 gap_n = (fecha_ref - last_seen).days if isinstance(last_seen, pd.Timestamp) else 999
+                
+                score_base = int(row['Score'])
+                
                 temp_d = temp_val.get(map_temp_dec.get(d, '🟡 Tibio'), 2)
                 temp_u = temp_val.get(map_temp_uni.get(u, '🟡 Tibio'), 2)
+                
                 est_d = map_est_dec.get(d, 50)
                 est_u = map_est_uni.get(u, 50)
+                
                 gap_bonus = min(gap_n / 10, 20)
-                candidatos_totales.append({'Numero': num, 'Perfil': perfil, 'Score': int(row['Score']),
-                                          'Gap_Num': gap_n, 'Temp_Score': temp_d + temp_u + (est_d + est_u) / 20 + gap_bonus})
+                
+                bonus_salidor = 0
+                gap_d = gaps_dec.get(d, 0)
+                gap_u = gaps_uni.get(u, 0)
+                
+                if map_estado_dec.get(d) in ['Vencido', 'Muy Vencido'] and freq_dec.get(d, 0) >= 8:
+                    bonus_salidor += min(gap_d / 5, 20)
+                    if map_estado_dec.get(d) == 'Muy Vencido':
+                        bonus_salidor += 10
+                
+                if map_estado_uni.get(u) in ['Vencido', 'Muy Vencido'] and freq_uni.get(u, 0) >= 8:
+                    bonus_salidor += min(gap_u / 5, 20)
+                    if map_estado_uni.get(u) == 'Muy Vencido':
+                        bonus_salidor += 10
+                
+                if (map_estado_dec.get(d) in ['Vencido', 'Muy Vencido'] and freq_dec.get(d, 0) >= 8) and \
+                   (map_estado_uni.get(u) in ['Vencido', 'Muy Vencido'] and freq_uni.get(u, 0) >= 8):
+                    bonus_salidor += 25
+                
+                bonus_escasez = 0
+                if porc_perfil >= 40:
+                    bonus_escasez += 15
+                    if total_combinaciones < 20:
+                        bonus_escasez += 20
+                    if total_combinaciones < 10:
+                        bonus_escasez += 10
+                
+                if porc_perfil >= 40:
+                    if freq_uni.get(u, 0) >= 8 and gap_u > 15:
+                        bonus_escasez += 25
+                    if freq_dec.get(d, 0) >= 8 and gap_d > 15:
+                        bonus_escasez += 25
+                    
+                    if porc_perfil >= 40 and total_combinaciones < 20 and \
+                       (freq_uni.get(u, 0) >= 8 and gap_u > 15):
+                        bonus_escasez += 30
+                
+                bonus_estabilidad = 0
+                if map_estado_dec.get(d) == 'Normal' and freq_dec.get(d, 0) < 8:
+                    bonus_estabilidad += 5
+                if map_estado_uni.get(u) == 'Normal' and freq_uni.get(u, 0) < 8:
+                    bonus_estabilidad += 5
+                
+                bonus_historial = 0
+                if num in df_hist_nums:
+                    freq_num = sum(1 for n in df_hist_nums.keys() if n == num)
+                    if freq_num >= 3:
+                        bonus_historial += 10
+                    if gap_n > 20:
+                        bonus_historial += min(gap_n / 10, 15)
+                
+                temp_score = temp_d + temp_u + (est_d + est_u) / 20 + gap_bonus + bonus_salidor + bonus_escasez + bonus_estabilidad + bonus_historial
+                
+                candidatos_totales.append({
+                    'Numero': num, 
+                    'Perfil': perfil, 
+                    'Score': score_base,
+                    'Gap_Num': gap_n, 
+                    'Temp_Score': temp_score,
+                    'Bonus_Salidor': bonus_salidor,
+                    'Bonus_Escasez': bonus_escasez
+                })
     
-    if not candidatos_totales: return []
+    if not candidatos_totales:
+        return list(range(0, 40))
+    
     df_cands = pd.DataFrame(candidatos_totales)
-    max_por_perfil = 12
+    
+    max_por_perfil = 20
     df_cands = df_cands.sort_values(['Score', 'Temp_Score', 'Gap_Num', 'Numero'], ascending=[False, False, False, True])
     
     candidatos_finales = []
@@ -743,30 +842,33 @@ def obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_op
         if perfil_counter[perfil] < max_por_perfil:
             candidatos_finales.append(row['Numero'])
             perfil_counter[perfil] += 1
-        if len(candidatos_finales) >= 30: break
+        if len(candidatos_finales) >= 40:
+            break
     
-    if len(candidatos_finales) < 30:
-        for _, row in df_cands.iterrows():
-            if row['Numero'] not in candidatos_finales:
-                candidatos_finales.append(row['Numero'])
-            if len(candidatos_finales) >= 30: break
+    if len(candidatos_finales) < 40:
+        for num in range(0, 100):
+            if num not in candidatos_finales:
+                candidatos_finales.append(num)
+            if len(candidatos_finales) >= 40:
+                break
     
-    resultado = candidatos_finales[:30]
+    resultado = candidatos_finales[:40]
     
     if debug_mode and debug_logs is not None:
-        debug_logs.append(f"📋 Top 30: {resultado}")
+        debug_logs.append(f"📋 Top 40: {resultado}")
     
     return resultado
 
-def generar_sugerencia_fusionada(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles, fecha_ref, estabilidad_digitos):
+def generar_sugerencia_fusionada(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles, fecha_ref, estabilidad_digitos, gaps_dec, gaps_uni, distribuciones_perfiles, freq_dec, freq_uni):
     st.subheader("🤖 Sugerencia Inteligente Fusionada")
     
     with st.expander("📖 ¿Cómo funciona la lógica?", expanded=False):
         st.markdown("""
         **Estados (P75):** Normal | Vencido | Muy Vencido
-        **Alerta RECUPERAR:** Estabilidad >60% + Estado Vencido/Muy Vencido
-        **Estado Atípico:** <20% del histórico → Penaliza -50 pts
-        **Estado Común:** >60% del histórico → Bonus +30 pts
+        **TOP 7:** Usa 7 de 9 perfiles (78% cobertura)
+        **TOP 40:** Genera 40 números en lugar de 30
+        **Bonus Salidor en Deuda:** Dígitos frecuentes con gap alto
+        **Bonus Escasez:** Perfiles frecuentes con pocas combinaciones
         """)
 
     st.markdown("### 🚨 Detalle de Alertas Activas")
@@ -851,8 +953,8 @@ def generar_sugerencia_fusionada(df_stats, transizioni, ultimo_perfil, df_oport_
     else:
         st.info("✅ No hay alertas activas.")
     
-    st.markdown("### 🎲 Top 30 Números Sugeridos")
-    lista_nums = obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles, fecha_ref, estabilidad_digitos)
+    st.markdown("### 🎲 Top 40 Números Sugeridos")
+    lista_nums = obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles, fecha_ref, estabilidad_digitos, gaps_dec, gaps_uni, distribuciones_perfiles, freq_dec, freq_uni)
     
     if not lista_nums:
         st.warning("⚠️ No se generaron candidatos.")
@@ -864,12 +966,12 @@ def generar_sugerencia_fusionada(df_stats, transizioni, ultimo_perfil, df_oport_
     def shorten_state(text):
         return {"Muy Vencido": "M.Vencido", "Vencido": "Vencido", "Normal": "Normal"}.get(str(text), str(text))
 
-    cols = st.columns(6)
+    cols = st.columns(8)
     for idx, num in enumerate(lista_nums):
         try:
             d_int, u_int = int(num // 10), int(num % 10)
             ed, eu = map_estado_dec.get(d_int, "?"), map_estado_uni.get(u_int, "?")
-            cols[idx % 6].markdown(f"""
+            cols[idx % 8].markdown(f"""
             <div style="background-color:#1e1e1e; padding:12px; border-radius:10px; text-align:center; border:1px solid #444;">
                 <h3 style="margin:0; color:#4ade80; font-size:1.4em;">{num:02d}</h3>
                 <div style="font-size:0.8em; color:{get_state_color_hex(str(ed))};">{shorten_state(str(ed))}</div>
@@ -878,7 +980,6 @@ def generar_sugerencia_fusionada(df_stats, transizioni, ultimo_perfil, df_oport_
             """, unsafe_allow_html=True)
         except: continue
 
-# === GUARDAR PREDICCIONES ===
 def guardar_prediccion_en_historico(fecha, sorteo, top30, perfil_top, score_promedio, numero_real=None):
     archivo = RUTA_HISTORICO
     
@@ -913,7 +1014,6 @@ def guardar_prediccion_en_historico(fecha, sorteo, top30, perfil_top, score_prom
         st.error(f"❌ Error: {e}")
         return False
 
-# === LEER HISTÓRICO ===
 def leer_historico_predicciones():
     if not os.path.exists(RUTA_HISTORICO):
         return pd.DataFrame()
@@ -935,7 +1035,6 @@ def leer_historico_predicciones():
         st.error(f"❌ Error al leer: {e}")
         return pd.DataFrame()
 
-# === ACTUALIZAR RESULTADOS ===
 def actualizar_resultados_pendientes(numero_real, fecha, sorteo):
     if not os.path.exists(RUTA_HISTORICO):
         return 0
@@ -985,7 +1084,6 @@ def actualizar_resultados_pendientes(numero_real, fecha, sorteo):
     
     return 0
 
-# === DASHBOARD DE EFECTIVIDAD - VERSIÓN QUE SÍ FUNCIONA ===
 def mostrar_dashboard_efectividad():
     st.header("📊 Dashboard de Efectividad")
     st.markdown("Análisis automático de predicciones anteriores.")
@@ -1047,10 +1145,8 @@ def mostrar_dashboard_efectividad():
     
     st.markdown("---")
     
-    # === CORREGIDO DEFINITIVAMENTE ===
     st.subheader("📈 Efectividad por Rango de Score")
     if 'Score_Promedio' in df_completas.columns and df_completas['Score_Promedio'].notna().any():
-        # ← CREAR DICCIONARIO PRIMERO, NO USAR DATFRAME CON GROUPBY
         score_dict = {}
         
         for label in ['<150', '150-200', '200-250', '>250']:
@@ -1073,7 +1169,6 @@ def mostrar_dashboard_efectividad():
                 'Efectividad': efectividad_en_rango
             }
         
-        # ← MOSTRAR RESULTADOS DIRECTAMENTE
         for label, datos in score_dict.items():
             if datos['Total'] > 0:
                 color = "🟢" if datos['Efectividad'] >= 40 else ("🟡" if datos['Efectividad'] >= 25 else "🔴")
@@ -1082,13 +1177,12 @@ def mostrar_dashboard_efectividad():
     with st.expander("📋 Ver Histórico Completo"):
         st.dataframe(df.sort_values('Fecha', ascending=False).head(50), hide_index=True, use_container_width=True)
 
-# === BACKTEST CORREGIDO - RESPETA SESIÓN SELECCIONADA ===
-def ejecutar_backtest(df_backtest_data, sorteos_objetivo, nombre_sesion, debug_mode=False):
-    if df_backtest_data.empty: 
+def ejecutar_backtest(df_full, sorteos_objetivo, nombre_sesion, debug_mode=False):
+    if df_full.empty: 
         st.warning(f"⚠️ No hay datos para backtest de {nombre_sesion}")
         return pd.DataFrame(), 0, 0, []
     
-    df_fijos = df_backtest_data[df_backtest_data['Posicion'] == 'Fijo'].copy()
+    df_fijos = df_full[df_full['Posicion'] == 'Fijo'].copy()
     if df_fijos.empty: 
         return pd.DataFrame(), 0, 0, []
     
@@ -1105,9 +1199,9 @@ def ejecutar_backtest(df_backtest_data, sorteos_objetivo, nombre_sesion, debug_m
     resultados, aciertos, total_sorteos = [], 0, 0
     debug_logs = [] if debug_mode else []
     
-    df_cache_full = obtener_historial_perfiles_cacheado(df_backtest_data)
+    df_cache_full = obtener_historial_perfiles_cacheado(df_full)
     distribuciones_cache = pre_calcular_distribuciones_perfiles(df_cache_full) if not df_cache_full.empty else {}
-    estabilidad_digitos_global = calcular_estabilidad_historica_digitos(df_backtest_data)
+    estabilidad_digitos_global = calcular_estabilidad_historica_digitos(df_full)
     
     progress_bar = st.progress(0)
     start_time = time.time()
@@ -1118,7 +1212,7 @@ def ejecutar_backtest(df_backtest_data, sorteos_objetivo, nombre_sesion, debug_m
         resultado_real = int(sorteo_actual['Numero'])
         total_sorteos += 1
         
-        df_historial = df_backtest_data[df_backtest_data['Fecha'] < fecha_ref].copy()
+        df_historial = df_full[df_full['Fecha'] < fecha_ref].copy()
         if len(df_historial) > 1000: 
             df_historial = df_historial.tail(1000)
         
@@ -1127,7 +1221,7 @@ def ejecutar_backtest(df_backtest_data, sorteos_objetivo, nombre_sesion, debug_m
             progress_bar.progress((i + 1) / sorteos_a_procesar)
             continue
         
-        df_oport_dec, df_oport_uni = analizar_oportunidad_por_digito(df_historial, fecha_ref)
+        df_oport_dec, df_oport_uni, gaps_dec, gaps_uni, freq_dec, freq_uni = analizar_oportunidad_por_digito(df_historial, fecha_ref)
         
         df_historial_perfiles = df_cache_full[df_cache_full['Fecha'] < fecha_ref].copy() if not df_cache_full.empty else pd.DataFrame()
         if df_historial_perfiles.empty:
@@ -1135,26 +1229,16 @@ def ejecutar_backtest(df_backtest_data, sorteos_objetivo, nombre_sesion, debug_m
         else:
             df_stats, transizioni, ultimo_perfil = analizar_estadisticas_perfiles(df_historial_perfiles, fecha_ref, distribuciones_cache=distribuciones_cache)
         
-        prediccion = obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles, fecha_ref, estabilidad_digitos_global)
+        prediccion = obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles, fecha_ref, estabilidad_digitos_global, gaps_dec, gaps_uni, distribuciones_cache, freq_dec, freq_uni)
         
         es_acierto = numero_en_lista(resultado_real, prediccion)
         if es_acierto: 
             aciertos += 1
         
         if debug_mode:
-            debug_logs.append({
-                'Fecha': fecha_ref.strftime('%d/%m/%Y'),
-                'Sorteo': tipo_sorteo,
-                'Real': resultado_real,
-                'En Top30': '✅' if es_acierto else '❌'
-            })
+            debug_logs.append({'Fecha': fecha_ref.strftime('%d/%m/%Y'), 'Sorteo': tipo_sorteo, 'Real': resultado_real, 'En Top30': '✅' if es_acierto else '❌'})
         
-        resultados.append({
-            'Fecha': fecha_ref.strftime('%d/%m/%Y'), 
-            'Sorteo': tipo_sorteo,
-            'Real': f"{resultado_real:02d}", 
-            'En Top30': '✅' if es_acierto else '❌'
-        })
+        resultados.append({'Fecha': fecha_ref.strftime('%d/%m/%Y'), 'Sorteo': tipo_sorteo, 'Real': f"{resultado_real:02d}", 'En Top30': '✅' if es_acierto else '❌'})
         
         elapsed = time.time() - start_time
         progress_bar.progress((i + 1) / sorteos_a_procesar)
@@ -1173,7 +1257,6 @@ def mostrar_tabla_personalidad_perfiles(df_historial_perfiles):
         return
     
     distribuciones = pre_calcular_distribuciones_perfiles(df_historial_perfiles)
-    
     if not distribuciones:
         st.info("ℹ️ No hay perfiles.")
         return
@@ -1195,7 +1278,6 @@ def mostrar_tabla_personalidad_perfiles(df_historial_perfiles):
     st.dataframe(df_tabla, hide_index=True, use_container_width=True)
     st.caption(f"📊 {len(filas_tabla)} perfiles | últimos 1000 sorteos")
 
-# --- MAIN ---
 def main():
     st.sidebar.header("⚙️ Panel de Control")
     
@@ -1274,7 +1356,8 @@ def main():
                     
                     st.cache_data.clear()
                     st.session_state.invalid_dates_df = None
-                    if os.path.exists(RUTA_CACHE): os.remove(RUTA_CACHE)
+                    if os.path.exists(RUTA_CACHE):
+                        os.remove(RUTA_CACHE)
                     time.sleep(1)
                     st.rerun()
                 except Exception as err: st.error(f"❌ Error: {err}")
@@ -1296,7 +1379,6 @@ def main():
                         st.error("⚠️ Vacío")
                 except Exception as err: st.error(f"❌ Error: {err}")
 
-    # === SIDEBAR: ÚLTIMOS RESULTADOS (FORMATO ORIGINAL) ===
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 Últimos Resultados")
     
@@ -1354,7 +1436,6 @@ def main():
                 target_sesion_default = "Tarde"
                 
             info_ultimo_sorteo = {'fecha': ultimo_registro['Fecha'], 'tipo': u_tipo}
-
     else:
         st.sidebar.warning("No hay datos.")
 
@@ -1375,9 +1456,10 @@ def main():
     if st.sidebar.button("🔄 Recargar"): 
         st.cache_data.clear()
         st.session_state.rerun_counter = 0
+        if os.path.exists(RUTA_CACHE):
+            os.remove(RUTA_CACHE)
         st.rerun()
     
-    # === FILTRAR POR SESIÓN SELECCIONADA ===
     if modo_sorteo == "Tarde": 
         df_analisis = df_full[df_full['Tipo_Sorteo'] == 'T'].copy()
         nombre_sesion_backtest = "Tarde"
@@ -1438,52 +1520,44 @@ def main():
 
     st.markdown("---")
 
-    df_oport_dec, df_oport_uni = analizar_oportunidad_por_digito(df_backtest, fecha_ref)
-    
-    st.header(f"🎯 Estado de Dígitos ({target_sesion} {fecha_ref.strftime('%d/%m')})")
+    df_oport_dec, df_oport_uni, gaps_dec, gaps_uni, freq_dec, freq_uni = analizar_oportunidad_por_digito(df_backtest, fecha_ref)
     
     if info_ultimo_sorteo:
         tipo_nombre = {'T': 'Tarde', 'N': 'Noche'}[info_ultimo_sorteo['tipo']]
         fecha_txt = info_ultimo_sorteo['fecha'].strftime('%d/%m/%Y')
-        st.caption(f"✅ Cálculo basado en datos hasta: **{tipo_nombre} {fecha_txt}**.")
+        if tipo_nombre == 'Tarde':
+            st.caption(f"✅ Estados calculados hasta **Tarde de {fecha_txt}** → Predice para **Noche**")
+        else:
+            st.caption(f"✅ Estados calculados hasta **Noche de {fecha_txt}** → Predice para **Tarde de mañana**")
     
+    st.header(f"🎯 Estado de Dígitos ({target_sesion})")
     col1, col2 = st.columns(2)
-    with col1: st.dataframe(df_oport_dec.sort_values('Punt. Base', ascending=False), hide_index=True)
-    with col2: st.dataframe(df_oport_uni.sort_values('Punt. Base', ascending=False), hide_index=True)
-        
+    with col1: st.subheader("🔟 Decenas"); st.dataframe(df_oport_dec.sort_values('Punt. Base', ascending=False), hide_index=True)
+    with col2: st.subheader("1️⃣ Unidades"); st.dataframe(df_oport_uni.sort_values('Punt. Base', ascending=False), hide_index=True)
+
     st.markdown("---")
     st.header("📅 Análisis de Perfiles (Motor Mejorado)")
     
     if st.button("🚀 Ejecutar Análisis", type="primary"):
         with st.spinner("Analizando..."):
             if not df_historial_perfiles_full.empty:
-                if target_val == 0: 
-                     df_historial_perfiles = df_historial_perfiles_full[df_historial_perfiles_full['Fecha'] < fecha_ref].copy()
-                else: 
-                     df_historial_perfiles = df_historial_perfiles_full[(df_historial_perfiles_full['Fecha'] < fecha_ref) | ((df_historial_perfiles_full['Fecha'] == fecha_ref) & (df_historial_perfiles_full['Sorteo'] == 'Tarde'))].copy()
-
-                if not df_historial_perfiles.empty:
-                    df_historial_perfiles['ID_Unico'] = df_historial_perfiles['Fecha'].astype(str).str[:10] + "_" + df_historial_perfiles['Sorteo'].astype(str)
-                    df_historial_perfiles = df_historial_perfiles.drop_duplicates(subset=['ID_Unico'], keep='last').reset_index(drop=True)
-                    df_historial_perfiles.drop(columns=['ID_Unico'], inplace=True)
-                    
-                    df_stats, transizioni, ultimo_perfil = analizar_estadisticas_perfiles(df_historial_perfiles, fecha_ref)
-                    estabilidad_digitos = calcular_estabilidad_historica_digitos(df_backtest)
-                    generar_sugerencia_fusionada(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles, fecha_ref, estabilidad_digitos)
-                    
-                    top30 = obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles, fecha_ref, estabilidad_digitos)
-                    if len(top30) > 0:
-                        score_prom = df_stats['Score'].mean() if 'Score' in df_stats.columns and not df_stats.empty else 0
-                        perfil_top = df_stats.iloc[0]['Perfil'] if not df_stats.empty else 'N/A'
-                        guardado = guardar_prediccion_en_historico(fecha_ref, target_sesion, top30, perfil_top, score_prom)
-                        if guardado:
-                            st.success("📝 Predicción guardada")
-                    
-                    st.markdown("---")
-                    st.subheader("📊 Estadística de Perfiles (Completa)")
-                    cols_tabla = ['Perfil', 'Frecuencia', 'Veces Normal', 'Veces Vencido', 'Veces Muy Vencido', 'Estado Actual', 'Estabilidad', 'Tiempo Limite', 'Alerta', 'Estado Ultima Salida', 'Estabilidad Ultima Salida', 'Exceso Ultima Salida']
-                    df_display = df_stats[cols_tabla].copy()
-                    st.dataframe(df_display.sort_values('Frecuencia', ascending=False), hide_index=True)
+                distribuciones_cache = pre_calcular_distribuciones_perfiles(df_historial_perfiles_full)
+                df_stats, transizioni, ultimo_perfil = analizar_estadisticas_perfiles(df_historial_perfiles_full, fecha_ref, distribuciones_cache=distribuciones_cache)
+                estabilidad_digitos = calcular_estabilidad_historica_digitos(df_backtest)
+                generar_sugerencia_fusionada(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles_full, fecha_ref, estabilidad_digitos, gaps_dec, gaps_uni, distribuciones_cache, freq_dec, freq_uni)
+                
+                top40 = obtener_prediccion_numeros_lista(df_stats, transizioni, ultimo_perfil, df_oport_dec, df_oport_uni, df_historial_perfiles_full, fecha_ref, estabilidad_digitos, gaps_dec, gaps_uni, distribuciones_cache, freq_dec, freq_uni)
+                if len(top40) > 0:
+                    score_prom = df_stats['Score'].mean() if 'Score' in df_stats.columns and not df_stats.empty else 0
+                    perfil_top = df_stats.iloc[0]['Perfil'] if not df_stats.empty else 'N/A'
+                    guardar_prediccion_en_historico(fecha_ref, target_sesion, top40, perfil_top, score_prom)
+                    st.success("📝 Predicción guardada (Top 40)")
+                
+                st.markdown("---")
+                st.subheader("📊 Estadística de Perfiles (Completa)")
+                cols_tabla = ['Perfil', 'Frecuencia', 'Veces Normal', 'Veces Vencido', 'Veces Muy Vencido', 'Estado Actual', 'Estabilidad', 'Tiempo Limite', 'Alerta', 'Estado Ultima Salida', 'Estabilidad Ultima Salida', 'Exceso Ultima Salida']
+                df_display = df_stats[cols_tabla].copy()
+                st.dataframe(df_display.sort_values('Frecuencia', ascending=False), hide_index=True)
 
     st.markdown("---")
     st.header("🧪 Backtesting (Real)")
